@@ -15,6 +15,7 @@ exclude:
     - .scratch/
     - .superset/
     - docs/beads-migration-to-github-issues.md
+    - plugins/rpw-working/mcp-servers/slack-via-uc-connection/
 
   # Glob patterns
   patterns:
