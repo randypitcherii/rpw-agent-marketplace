@@ -215,6 +215,25 @@ def publish(
     subprocess.run(["git", "push"], cwd=public_repo_dir, check=True)
     print("Pushed to public remote.")
 
+    # Tag with the marketplace version for pinning support
+    manifest_path = public_repo_dir / ".claude-plugin" / "marketplace.json"
+    if manifest_path.exists():
+        with manifest_path.open(encoding="utf-8") as f:
+            version = json.load(f).get("metadata", {}).get("version")
+        if version:
+            tag = f"v{version}"
+            tag_result = subprocess.run(
+                ["git", "tag", tag],
+                cwd=public_repo_dir,
+                capture_output=True,
+                text=True,
+            )
+            if tag_result.returncode == 0:
+                subprocess.run(["git", "push", "--tags"], cwd=public_repo_dir, check=True)
+                print(f"Tagged: {tag}")
+            else:
+                print(f"Tag {tag} already exists, skipping.")
+
     return 0
 
 
