@@ -1,0 +1,27 @@
+{
+  "_comment": "Aggregated MCP config for rpw-building. Includes local servers and hosted endpoints.",
+  "mcpServers": {
+    "cmux": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/cmux",
+        "python",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/cmux/run_mcp.py"
+      ]
+    },
+    "chrome-devtools": {
+      "command": "npx",
+      "args": [
+        "chrome-devtools-mcp@latest",
+        "--userDataDir=~/.vibe/chrome/profile",
+        "--no-category-performance",
+        "--no-category-emulation"
+      ]
+    },
+    "exa": {
+      "url": "https://mcp.exa.ai/mcp?tools=web_search_advanced_exa,code_search_exa"
+    }
+  }
+}

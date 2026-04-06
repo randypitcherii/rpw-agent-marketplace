@@ -1,0 +1,14 @@
+{
+  "_comment": "Sample config for chrome-devtools. Merge into your MCP client config.",
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "npx",
+      "args": [
+        "chrome-devtools-mcp@latest",
+        "--userDataDir=~/.vibe/chrome/profile",
+        "--no-category-performance",
+        "--no-category-emulation"
+      ]
+    }
+  }
+}

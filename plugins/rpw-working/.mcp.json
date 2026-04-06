@@ -1,0 +1,84 @@
+{
+  "mcpServers": {
+    "google-tasks": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/google-tasks",
+        "python",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/google-tasks/run_mcp.py"
+      ]
+    },
+    "google-docs-with-subtabs": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/google-docs-with-subtabs",
+        "python",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/google-docs-with-subtabs/run_mcp.py"
+      ]
+    },
+    "gemini-image": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/gemini-image",
+        "python",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/gemini-image/run_mcp.py"
+      ]
+    },
+    "glean": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/glean",
+        "python",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/glean/run_mcp.py"
+      ]
+    },
+    "google": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/google",
+        "python",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/google/run_mcp.py"
+      ]
+    },
+    "jira": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/jira",
+        "python",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/jira/run_mcp.py"
+      ]
+    },
+    "slack": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/slack",
+        "python",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/slack/run_mcp.py"
+      ]
+    },
+    "exa": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/exa",
+        "python",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/exa/run_mcp.py"
+      ]
+    }
+  }
+}

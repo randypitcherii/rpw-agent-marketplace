@@ -1,0 +1,46 @@
+# Secrets
+.env
+**/.env
+dev.env
+test.env
+prod.env
+**/dev.env
+**/test.env
+**/prod.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Node / Raycast
+node_modules/
+dist/
+**/package-lock.json
+
+# Local task tracker database (private/local-only)
+.beads/
+
+# Local plugin state (private/local-only)
+.claude/*.local.md
+.claude/*.local.json
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
+
+# Git worktrees (isolated feature branches)
+.worktrees/
+.claude/worktrees/
+
+# Build state (ephemeral, per-session)
+.claude/active-build
+.claude/build-state.json
+.claude/build-evidence/
+
+# Public repo local clone (used by publish tooling)
+.public-repo/

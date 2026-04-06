@@ -1,0 +1,9 @@
+{
+  "_comment": "Sample config for Slack. Merge into your MCP client config. No secrets.",
+  "mcpServers": {
+    "slack": {
+      "command": "uv",
+      "args": ["run", "--project", "${CLAUDE_PLUGIN_ROOT}/mcp-servers/slack", "python", "${CLAUDE_PLUGIN_ROOT}/mcp-servers/slack/run_mcp.py"]
+    }
+  }
+}

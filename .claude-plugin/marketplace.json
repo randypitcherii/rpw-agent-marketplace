@@ -1,0 +1,50 @@
+{
+  "name": "rpw-agent-marketplace",
+  "owner": {
+    "name": "Randy Pitcher",
+    "email": "randy.pitcher@databricks.com"
+  },
+  "metadata": {
+    "description": "Randy's personal Claude Code plugins",
+    "version": "2026.04.0401",
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "rpw-building",
+      "source": "./plugins/rpw-building",
+      "description": "Dev and tooling plugin \u2014 /build command, MCP standards, env setup",
+      "version": "2026.04.0401",
+      "author": {
+        "name": "Randy Pitcher"
+      },
+      "category": "productivity",
+      "keywords": [
+        "build",
+        "mcp",
+        "standards",
+        "env",
+        "setup",
+        "tasks",
+        "tooling"
+      ]
+    },
+    {
+      "name": "rpw-working",
+      "source": "./plugins/rpw-working",
+      "description": "Working plugin for Databricks Field Engineering assets \u2014 UCO management and MCP tooling",
+      "version": "2026.04.0401",
+      "author": {
+        "name": "Randy Pitcher"
+      },
+      "category": "productivity",
+      "keywords": [
+        "salesforce",
+        "uco",
+        "use-case",
+        "databricks",
+        "field-engineering"
+      ]
+    }
+  ]
+}

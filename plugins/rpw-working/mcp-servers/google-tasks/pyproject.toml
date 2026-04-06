@@ -1,0 +1,16 @@
+[project]
+name = "google-tasks"
+version = "0.1.0"
+description = "MCP server for Google Tasks with assigned-task visibility (showAssigned=true)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=3.0.0",
+    "google-api-python-client>=2.190.0",
+    "google-auth>=2.48.0",
+    "google-auth-httplib2>=0.3.0",
+    "python-dotenv>=1.2.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]

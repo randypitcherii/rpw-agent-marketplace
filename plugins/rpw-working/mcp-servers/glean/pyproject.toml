@@ -1,0 +1,9 @@
+[project]
+name = "glean-mcp-wrapper"
+version = "0.1.0"
+description = "MCP server wrapper for Glean (PyPI glean-mcp package)"
+requires-python = ">=3.10"
+dependencies = [
+    "python-dotenv>=1.2.1",
+    "glean-mcp>=3.3.0",
+]

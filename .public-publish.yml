@@ -1,0 +1,33 @@
+# Public publish exclusion config
+# Paths and patterns excluded when publishing to the public repo.
+
+exclude:
+  # Exact paths (relative to repo root)
+  paths:
+    - plugins/rpw-databricks
+    - .beads/
+    - .claude/settings.local.json
+    - .claude/projects/
+    - .claude/hooks/
+    - .claude/build-state.json
+    - .claude/build-evidence/
+    - .claude/active-build
+    - .scratch/
+    - .superset/
+    - docs/beads-migration-to-github-issues.md
+
+  # Glob patterns
+  patterns:
+    - "**/.env"
+    - "**/dev.env"
+    - "**/test.env"
+    - "**/prod.env"
+    - "**/.DS_Store"
+    - "**/__pycache__/"
+    - "**/*.pyc"
+    - ".worktrees/"
+    - ".claude/worktrees/"
+
+target:
+  repo: randypitcherii/rpw-agent-marketplace
+  branch: main

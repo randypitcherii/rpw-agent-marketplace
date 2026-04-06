@@ -1,0 +1,37 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "rpw-working-tasks",
+  "title": "RPW Working Tasks",
+  "description": "Starter Raycast command for drafting rpw-working task entries.",
+  "author": "randy.pitcher",
+  "categories": [
+    "Productivity",
+    "Developer Tools"
+  ],
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "draft-task",
+      "title": "Draft RPW Task",
+      "description": "Draft a normalized task block for rpw-working workflows.",
+      "mode": "view"
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.81.2"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^1.0.9",
+    "@types/node": "^22.13.14",
+    "@types/react": "^18.3.18",
+    "eslint": "^8.57.1",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.2"
+  },
+  "scripts": {
+    "build": "ray build -e dist",
+    "dev": "ray develop",
+    "lint": "eslint src",
+    "fix-lint": "eslint src --fix"
+  }
+}

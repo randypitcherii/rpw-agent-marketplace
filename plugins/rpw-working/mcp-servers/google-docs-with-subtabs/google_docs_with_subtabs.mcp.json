@@ -1,0 +1,16 @@
+{
+  "_comment": "Merge mcpServers into your MCP config. No secrets.",
+  "_notes": "Auth: gcloud ADC. .env: GDOCS_QUOTA_PROJECT, GDOCS_TARGET_FOLDER_ID. Test: uv run python -m unittest -v",
+  "mcpServers": {
+    "google-docs-with-subtabs": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/google-docs-with-subtabs",
+        "python",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/google-docs-with-subtabs/run_mcp.py"
+      ]
+    }
+  }
+}

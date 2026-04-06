@@ -1,0 +1,14 @@
+[project]
+name = "gemini-image"
+version = "0.1.0"
+description = "MCP server for Gemini native image generation and editing"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=3.0.0",
+    "google-genai>=1.0.0",
+    "python-dotenv>=1.2.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]

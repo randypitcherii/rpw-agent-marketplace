@@ -1,0 +1,12 @@
+{
+  "name": "rpw-working",
+  "version": "2026.04.0401",
+  "description": "Working plugin for Databricks Field Engineering assets — UCO management and MCP tooling",
+  "author": {
+    "name": "Randy Pitcher",
+    "email": "randy.pitcher@databricks.com"
+  },
+  "commands": "./commands/",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}

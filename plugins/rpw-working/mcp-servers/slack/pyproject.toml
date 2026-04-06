@@ -1,0 +1,8 @@
+[project]
+name = "slack-mcp-wrapper"
+version = "0.1.0"
+description = "MCP server wrapper for Slack (PEX-based)"
+requires-python = ">=3.10"
+dependencies = [
+    "python-dotenv>=1.2.1",
+]

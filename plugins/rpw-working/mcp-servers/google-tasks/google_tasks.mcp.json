@@ -1,0 +1,16 @@
+{
+  "_comment": "Merge mcpServers into your MCP config. No secrets — run_mcp.py loads .env. showAssigned=true for assigned-task visibility.",
+  "_notes": "Auth: .env (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN). Test: uv run python test_google_tasks.py",
+  "mcpServers": {
+    "google-tasks": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/google-tasks",
+        "python",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/google-tasks/run_mcp.py"
+      ]
+    }
+  }
+}

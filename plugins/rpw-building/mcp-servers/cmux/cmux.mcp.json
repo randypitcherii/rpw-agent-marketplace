@@ -1,0 +1,16 @@
+{
+  "_comment": "Merge mcpServers into your MCP config. No secrets — cmux uses a local Unix socket.",
+  "_notes": "Requires cmux running with socket at /tmp/cmux.sock. Override with CMUX_SOCKET_PATH env var.",
+  "mcpServers": {
+    "cmux": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/cmux",
+        "python",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/cmux/run_mcp.py"
+      ]
+    }
+  }
+}

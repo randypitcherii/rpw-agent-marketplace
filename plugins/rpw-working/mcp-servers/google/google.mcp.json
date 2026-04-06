@@ -1,0 +1,9 @@
+{
+  "_comment": "Sample config for Google. Merge into your MCP client config. No secrets.",
+  "mcpServers": {
+    "google": {
+      "command": "uv",
+      "args": ["run", "--project", "${CLAUDE_PLUGIN_ROOT}/mcp-servers/google", "python", "${CLAUDE_PLUGIN_ROOT}/mcp-servers/google/run_mcp.py"]
+    }
+  }
+}

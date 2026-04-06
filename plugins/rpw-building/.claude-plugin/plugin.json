@@ -1,0 +1,43 @@
+{
+  "name": "rpw-building",
+  "version": "2026.04.0401",
+  "description": "Dev and tooling plugin — /build command, /doctor setup, MCP standards, cmux integration",
+  "author": {
+    "name": "Randy Pitcher",
+    "email": "randy.pitcher@databricks.com"
+  },
+  "skills": "./skills/",
+  "commands": "./commands/",
+  "mcpServers": "./.mcp.json",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-start-orient.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/safety-tilde-guard.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/destructive-command-guard.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,66 @@
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#1a1a2e',
+  'primaryTextColor': '#ffffff',
+  'primaryBorderColor': '#4a4a8a',
+  'lineColor': '#666666',
+  'fontSize': '14px'
+}}}%%
+flowchart TD
+    %% ── Tier 1: Orchestration ──
+    HUMAN(["👤 Human"])
+    BL["<b>Build Lead</b><br/><i>Opus</i><br/><code>build-{feature}</code><br/>Tier 1 · Orchestration"]
+
+    %% ── Tier 2: Implementation ──
+    BW["<b>Build Worker</b><br/><i>Opus / Sonnet</i><br/><code>bw-{task}</code><br/>Tier 2 · Implementation<br/>TDD · worktree per task"]
+
+    %% ── Tier 3: Review ──
+    SG["<b>PR Security Guard</b><br/><i>Opus</i><br/><code>guard-{feature}</code><br/>Tier 3 · Review<br/>Security · Regressions · Quality"]
+    SI["<b>Simplifier</b><br/><i>Opus</i><br/><code>simplify-{feature}</code><br/>Tier 3 · Review<br/>Refactoring pass"]
+
+    %% ── Tier 4: Research ──
+    RL["<b>Research Lead</b><br/><i>Opus</i><br/><code>research-{topic}</code><br/>Tier 4 · Research<br/>Deep research"]
+    RW["<b>Research Worker</b><br/><i>Sonnet</i><br/><code>rw-{topic}-{n}</code><br/>Tier 4 · Research<br/>Parallelized search"]
+
+    %% ── Tier 5: Utility ──
+    MN["<b>Minion</b><br/><i>Haiku</i><br/><code>minion-{action}</code><br/>Tier 5 · Utility<br/>Logs · Bead CRUD · PRs · Chatty cmds"]
+
+    %% ── Dispatch edges ──
+    HUMAN -->|"/build"| BL
+    BL -->|"Phase 1-2"| BW
+    BL -->|"Phase 3"| SG
+    BL -->|"Phase 3"| SI
+    BL -->|"any phase"| RL
+    BL -->|"any phase"| MN
+    BW -->|"as needed"| RL
+    BW -->|"as needed"| MN
+    RL -->|"parallel"| RW
+    RL -->|"as needed"| MN
+
+    %% ── Bead hierarchy (subgraph) ──
+    subgraph BEADS["Bead Hierarchy"]
+        direction TB
+        MS["<b>Milestone</b><br/><i>optional</i>"]
+        FT["<b>Feature</b><br/><i>one per build cycle</i>"]
+        TK["<b>Task</b><br/><i>one Build Worker + one worktree</i>"]
+        DV["<b>Discovery</b><br/><i>non-blocking: tech debt, bugs, TODOs</i>"]
+        MS -->|"contains"| FT
+        FT -->|"contains"| TK
+        FT -->|"contains"| DV
+    end
+
+    %% ── Styling ──
+    classDef tier1 fill:#1a3a6b,stroke:#4a7ab5,color:#ffffff,rx:8
+    classDef tier2 fill:#1a5e2a,stroke:#4caf50,color:#ffffff,rx:8
+    classDef tier3 fill:#7a3a00,stroke:#ff8c00,color:#ffffff,rx:8
+    classDef tier4 fill:#4a1a6b,stroke:#9c4dcc,color:#ffffff,rx:8
+    classDef tier5 fill:#3a3a3a,stroke:#888888,color:#ffffff,rx:8
+    classDef human fill:#2a2a2a,stroke:#aaaaaa,color:#ffffff
+    classDef bead fill:#1a3a3a,stroke:#4a9a9a,color:#e0f0f0,rx:4
+
+    class BL tier1
+    class BW tier2
+    class SG,SI tier3
+    class RL,RW tier4
+    class MN tier5
+    class HUMAN human
+    class MS,FT,TK,DV bead

@@ -1,0 +1,11 @@
+[project]
+name = "cmux-mcp"
+version = "0.1.0"
+description = "MCP server for cmux terminal multiplexer — workspace, surface, input, and notification control"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=3.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
