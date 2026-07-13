@@ -1,0 +1,32 @@
+graph LR
+  subgraph TrackingServer["Tracking Server (backend)"]
+    TS[Tracking Server]
+  end
+
+  subgraph ExperimentGroup["Experiment"]
+    EX[Experiment]
+    RUN[Run]
+    PARAMS[Parameters]
+    METRICS[Metrics]
+    ART[Artifacts]
+  end
+
+  subgraph RegistryGroup["Model Registry"]
+    MOD[Model]
+    REG[Model Registry]
+    ALIAS[Stage / Alias]
+  end
+
+  TRACE[Trace]
+
+  EX -->|contains| RUN
+  RUN -->|logs| PARAMS
+  RUN -->|logs| METRICS
+  RUN -->|logs| ART
+  ART -->|packages into| MOD
+  MOD -->|registers in| REG
+  REG -->|assigns| ALIAS
+  RUN -.->|emits| TRACE
+  TS -.->|persists| EX
+  TS -.->|persists| REG
+  TS -.->|persists| TRACE

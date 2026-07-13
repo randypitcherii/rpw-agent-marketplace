@@ -1,0 +1,65 @@
+name: Validate
+
+# Minimal CI for the PUBLIC MIRROR. The mirror ships marketplace artifacts only
+# (no tests/, scripts/, or Makefile), so this checks the invariants that matter
+# for a published marketplace: the manifest parses, the private plugin never
+# leaked, and no secret .env files rode along. Pure stdlib — no dependencies.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Marketplace manifest is valid and private-plugin-free
+        run: |
+          python3 - <<'PY'
+          import json, sys, pathlib
+
+          manifest_path = pathlib.Path(".claude-plugin/marketplace.json")
+          manifest = json.loads(manifest_path.read_text())
+
+          assert manifest.get("name") == "rpw-agent-marketplace", "unexpected marketplace name"
+
+          plugins = manifest.get("plugins", [])
+          assert plugins, "marketplace has no plugins"
+
+          names = [p.get("name") for p in plugins]
+          sources = [p.get("source", "") for p in plugins]
+
+          # The private plugin must never appear in the mirror manifest.
+          assert "rpw-private" not in names, f"rpw-private leaked into manifest: {names}"
+          bad = [s for s in sources if "rpw-private" in s]
+          assert not bad, f"rpw-private source path leaked into manifest: {bad}"
+
+          # Every referenced plugin source must actually exist in the mirror.
+          for src in sources:
+              rel = src.lstrip("./")
+              assert pathlib.Path(rel).is_dir(), f"plugin source missing from mirror: {src}"
+
+          print(f"OK: manifest valid, plugins={names}")
+          PY
+
+      - name: No private plugin directory in the mirror
+        run: |
+          if [ -d "plugins/rpw-private" ]; then
+            echo "ERROR: plugins/rpw-private/ leaked into the public mirror" >&2
+            exit 1
+          fi
+          echo "OK: no plugins/rpw-private/ present"
+
+      - name: No secret env files committed
+        run: |
+          hits=$(git ls-files | grep -E '(^|/)(\.env|dev\.env|test\.env|prod\.env)$' || true)
+          if [ -n "$hits" ]; then
+            echo "ERROR: secret env files present in mirror:" >&2
+            echo "$hits" >&2
+            exit 1
+          fi
+          echo "OK: no secret .env files committed"

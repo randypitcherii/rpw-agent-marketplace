@@ -1,0 +1,11 @@
+[project]
+name = "jira-uc-mcp"
+version = "0.1.0"
+description = "FastMCP server for Jira via Databricks UC jira-mcp connection (http_request)"
+requires-python = ">=3.10"
+dependencies = [
+    "databricks-sdk>=0.105.0",
+    "fastmcp>=3.2.4",
+    "python-dotenv>=1.2.1",
+]
+
