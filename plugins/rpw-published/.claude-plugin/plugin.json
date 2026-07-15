@@ -1,0 +1,92 @@
+{
+  "name": "rpw-published",
+  "version": "2026.07.1301",
+  "description": "Publicly-shareable plugin \u2014 /build + dev tooling, /doctor setup, MCP standards, env setup, productivity skills (visualize, document-files, human-todo, superset-launch), and generic MCP servers (Google, Gemini, Jira, exa, imessage)",
+  "author": {
+    "name": "Randy Pitcher",
+    "email": "randy.pitcher@databricks.com"
+  },
+  "license": "Apache-2.0",
+  "skills": "./skills/",
+  "commands": "./commands/",
+  "mcpServers": "./.mcp.json",
+  "dependencies": [
+    {
+      "name": "chrome-devtools-mcp",
+      "marketplace": "claude-plugins-official"
+    }
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-start-orient.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/mcp-health-check.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/safety-tilde-guard.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/destructive-command-guard.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/build-compliance.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/file-protection.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/worktree-edit-guard.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/build-completion-gate.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

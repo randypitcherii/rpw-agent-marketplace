@@ -1,0 +1,10 @@
+[project]
+name = "imessage-mcp"
+version = "0.1.0"
+description = "FastMCP server wrapping the `imsg` CLI (basic mode): read-only iMessage search + a send-only notify-me alert path"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=3.2.4",
+    "python-dotenv>=1.2.1",
+]
+

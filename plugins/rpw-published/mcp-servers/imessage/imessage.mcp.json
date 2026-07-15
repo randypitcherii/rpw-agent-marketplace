@@ -1,0 +1,9 @@
+{
+  "_comment": "Sample config for the iMessage server. Merge into your MCP client config. No secrets.",
+  "mcpServers": {
+    "imessage": {
+      "command": "uv",
+      "args": ["run", "--project", "${CLAUDE_PLUGIN_ROOT}/mcp-servers/imessage", "python", "${CLAUDE_PLUGIN_ROOT}/mcp-servers/imessage/run_mcp.py"]
+    }
+  }
+}

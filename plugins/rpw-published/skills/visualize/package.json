@@ -1,0 +1,11 @@
+{
+  "name": "rpw-visualize-skill",
+  "version": "1.0.0",
+  "description": "Render Mermaid sources as styled SVGs using the canonical Mono Bold + saturated highlights theme",
+  "type": "module",
+  "private": true,
+  "main": "render.mjs",
+  "dependencies": {
+    "beautiful-mermaid": "^1.1.3"
+  }
+}

@@ -4,17 +4,21 @@
     "name": "Randy Pitcher",
     "email": "randy.pitcher@databricks.com"
   },
+  "allowCrossMarketplaceDependenciesOn": [
+    "claude-plugins-official"
+  ],
   "metadata": {
     "description": "Randy's personal Claude Code plugins",
-    "version": "2026.04.0401",
+    "version": "2026.07.1301",
     "pluginRoot": "./plugins"
   },
   "plugins": [
     {
-      "name": "rpw-building",
-      "source": "./plugins/rpw-building",
-      "description": "Dev and tooling plugin \u2014 /build command, MCP standards, env setup",
-      "version": "2026.04.0401",
+      "name": "rpw-published",
+      "source": "./plugins/rpw-published",
+      "description": "Publicly-shareable plugin \u2014 /build + dev tooling, MCP standards, env setup, productivity skills, and generic MCP servers",
+      "version": "2026.07.1301",
+      "license": "Apache-2.0",
       "author": {
         "name": "Randy Pitcher"
       },
@@ -26,24 +30,8 @@
         "env",
         "setup",
         "tasks",
-        "tooling"
-      ]
-    },
-    {
-      "name": "rpw-working",
-      "source": "./plugins/rpw-working",
-      "description": "Working plugin for Databricks Field Engineering assets \u2014 UCO management and MCP tooling",
-      "version": "2026.04.0401",
-      "author": {
-        "name": "Randy Pitcher"
-      },
-      "category": "productivity",
-      "keywords": [
-        "salesforce",
-        "uco",
-        "use-case",
-        "databricks",
-        "field-engineering"
+        "tooling",
+        "productivity"
       ]
     }
   ]

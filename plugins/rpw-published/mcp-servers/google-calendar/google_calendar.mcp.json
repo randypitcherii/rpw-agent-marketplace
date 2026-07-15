@@ -1,0 +1,15 @@
+{
+  "_comment": "Sample config for Google Calendar. Merge into your MCP client config. No secrets.",
+  "mcpServers": {
+    "google-calendar": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/google-calendar",
+        "python",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/google-calendar/run_mcp.py"
+      ]
+    }
+  }
+}

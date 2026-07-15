@@ -1,0 +1,15 @@
+{
+  "_comment": "Sample config for Google Drive. Merge into your MCP client config. No secrets.",
+  "mcpServers": {
+    "google-drive": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/google-drive",
+        "python",
+        "${CLAUDE_PLUGIN_ROOT}/mcp-servers/google-drive/run_mcp.py"
+      ]
+    }
+  }
+}
