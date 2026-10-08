@@ -1,6 +1,6 @@
 ---
 name: code-review-and-pr
-description: House conventions for reviewing a diff/PR and preparing a PR for merge in this repo. Use when the user says "prep this PR", "review this diff", "review this PR", "ready to merge?", "is this mergeable?", or before opening/landing a PR. Carries the repo-specific review checklist and PR-body shape; defers review *mechanics* to the built-in /code-review, /review, and /security-review commands.
+description: House conventions for reviewing a diff/PR and preparing a PR for merge in this repo. Use when the user says "prep this PR", "review this diff", "review this PR", "ready to merge?", "is this mergeable?", or before opening/landing a PR. Carries the repo-specific review checklist, the mandatory demo-at-creation gate, and the PR-body shape; defers review *mechanics* to the built-in /code-review, /review, and /security-review commands.
 ---
 
 # Code Review + PR Preparation (House Conventions)
@@ -11,7 +11,7 @@ This skill is the **conventions layer** for two moments: reviewing a change, and
 |------|----------------------|-------------------------------|
 | Find correctness bugs + reuse/simplification/efficiency cleanups in the diff | `/code-review` (`--comment` to post inline, `--fix` to apply) | The repo-specific things to look for that a generic tool can't know |
 | Review an open PR | `/review` | What "ready to merge" means *here* |
-| Security pass on pending changes | `/security-review` | Marketplace secret/invariant rules below |
+| Security pass on pending changes | `/security-review` | Marketplace secret/invariant rules (dimension 5) |
 
 **Rule of thumb:** run the harness command for the *mechanics*, then walk the conventions below for what the mechanics don't encode. If a finding is generic ("this loop is O(n²)"), the harness command owns it. If it's repo-specific ("this leaks a Claude-ism into runtime code"), it lives here.
 
@@ -21,37 +21,28 @@ This skill is the **conventions layer** for two moments: reviewing a change, and
 
 ## Part 1 — Reviewing a diff or PR
 
-Run `/code-review` first for the generic pass. Then check these **repo-specific** dimensions the generic pass won't know about:
+Run `/code-review` first for the generic pass. Then walk the six **repo-specific** dimensions in [`review-dimensions.md`](review-dimensions.md) — the boundaries a generic pass cannot know:
 
-### 1. Receipt / gate contracts
-- `/build` phases are enforced by **receipts** (`.rpw/build/receipts/<phase>.json`) and the build-completion-gate Stop hook. The gate checks **receipt existence + valid JSON, not contents** — so a change that makes a gate conditional is a **`build.md` prose edit plus an auto-written receipt**, not a hook change. Flag any PR that tries to gate behavior by editing the hook when prose+receipt is the real lever.
-- A runtime change that claims a phase passed must reflect the *actual* gate: runtime receipts must mirror `make runtime-test`, and `eval-test` stays a separate target on purpose. Don't let a receipt assert coverage the test target didn't run.
+| # | Dimension | The failure it catches |
+|---|-----------|------------------------|
+| 1 | **Receipt / gate contracts** | a harness hook reintroduced as the `/build` enforcement point (#515); a receipt asserting coverage the test target never ran |
+| 2 | **Harness-neutral boundaries** | a Claude-ism (slash-command name, `${CLAUDE_PLUGIN_ROOT}`, `.claude/` path) leaking **into** `libs/`; coordination wired into lifecycle hooks |
+| 3 | **Custom ChatModel wrappers** | a langchain-unrecognized-class bug fake-member unit tests can't see — demand evidence of one cheap **live routing call** |
+| 4 | **Skill / command drift** | frontmatter `description` no longer matching the body (it decides whether the skill loads at all); catalogs out of sync; a SKILL.md past the word cap |
+| 5 | **Marketplace invariants** | committed secrets or a proxy-pinned lockfile; marketplace name / `source:` shape broken; stale artifacts after a structural move |
+| 6 | **Tests prove the real path** | a "fix" with no red→green test; a unit test standing in for the full path the user hits; a CI-only failure treated as a CI problem instead of a hermeticity defect |
 
-### 2. Harness-neutral boundaries (no Claude-isms in runtime code)
-- `libs/rpw_runtime` is the **canonical, harness-neutral runtime**. `plugin.json` / marketplace are a thin Claude *convenience adapter* over it. Flag any Claude-CLI-specific assumption (slash-command names, `${CLAUDE_PLUGIN_ROOT}`, `.claude/` paths, Claude-only tool names) that leaks **into** `libs/`. Adapters may know about Claude; the runtime must not.
-- Lifecycle belongs in the graph; coordination (the claim ledger, `rpw` coordination surface) is a *separate* surface, **not** graph hooks. A PR that wires coordination into lifecycle hooks is crossing a boundary — flag it.
-
-### 3. Custom ChatModel wrappers → demand a live routing check
-- Custom `BaseChatModel` wrappers (LLM pool, CLI providers) repeatedly hit **langchain-unrecognized-class** bugs that fake-member unit tests cannot catch — literal `tool_choice=None` forwarding, `max_retries` not threaded, etc. If a PR adds or edits such a wrapper, the review is **not complete on unit tests alone**: require evidence of a cheap **live routing call** (one real round-trip through the wrapper). "Unit tests pass" is insufficient here; say so.
-
-### 4. Skill / command drift
-- Skills are auto-discovered from `plugins/*/skills/`. When a PR changes a skill's behavior, check the **frontmatter `description`** (the trigger surface) still matches what the body does, and that any `AGENTS.md` / `CLAUDE.md` skill list or README catalog stays in sync. Drift between the description and the body is a real defect — the description is what decides whether the skill ever loads.
-- Same for `/build` and other commands: a behavior change in `build.md` that isn't reflected in its phase docs/receipts is drift.
-
-### 5. Marketplace invariants
-- Marketplace name stays `rpw-agent-marketplace`; plugin entries use `source: "./plugins/<name>"`; plugins live under `./plugins/`.
-- **No secrets committed** — `.env` files, tokens, credentials. The Databricks-proxy `uv.lock` files are gitignored on purpose (wrong URLs for public consumers); only the eval-harness lock stays pinned. Flag any committed lockfile pinning the proxy URL into a shared path.
-- After structural moves, stale legacy artifacts (moved-path caches, venvs, `__pycache__`) must be removed.
-
-### 6. Tests prove the real path
-- Bug fixes need a **red→green** test: a test that failed before the fix and passes after. Flag a "fix" with no test that demonstrates the failure mode.
-- The test must exercise the **full path the user hits** — if the flow crosses a proxy/router/multiple hops, an isolated unit test of the new function is not enough.
+Read the companion before signing off on anything those dimensions touch — the table rows are triggers, not the rule.
 
 ---
 
 ## Part 2 — Preparing a PR
 
 Run `/security-review` on the pending changes, fix anything critical, then shape the PR per the conventions below.
+
+### Embed the demo when creating the PR
+
+**Gate — no exceptions.** A user-visible change needs demo media in the initial PR body. Create it with `demo-capture`; use an inline GIF or still images in the template's Demo section. Linked video files do not render inline. A non-visual change writes `N/A` with the reason. Never add the demo after opening the PR.
 
 ### Commit hygiene is squash-merge-aware
 PRs here are **squash-merged** — individual commit boundaries collapse into one commit at merge time. So:
@@ -92,6 +83,7 @@ When in doubt, check the issue body for sibling-issue references before choosing
 
 ### "Ready to merge?" checklist
 Before opening — or when asked "is this mergeable?" — confirm:
+- [ ] **Demo embedded in the body** for any user-visible change (`demo-capture`), or `N/A` with a reason. Do this *before* `gh pr create`.
 - [ ] `make check` (the project gate) is green. Name the result in **Verification**.
 - [ ] PR body has **What / Why / Verification**; Verification names real checks (no banned vocab).
 - [ ] Issue trailer is correct (`Closes` vs `Part of` — see above).
@@ -101,15 +93,15 @@ Before opening — or when asked "is this mergeable?" — confirm:
 - [ ] Branch targets the integration branch (`production`), not a release/publish branch.
 
 ### Merge autonomy boundary
-Routine feature PRs to `production` are delivered autonomously — push, open, squash-merge, clean up — **no confirmation needed**. **Confirm first only** when the action triggers a public release (`make publish-public` / merging the publish PR on the mirror), it's a `--force`-push to a shared branch, or the working tree mixes unrelated concerns. When a build runs under an orchestrator that serializes sibling merges, **open the PR and stop** — let the orchestrator drive the merge and resolve any `plugin.json` version-line conflicts; do not rebase against sibling PRs.
+This restates the root `AGENTS.md` merge-autonomy default (#1878); that is the canonical statement. Routine feature PRs to `production` are delivered autonomously — push, open, squash-merge, clean up — **no confirmation needed**. **Confirm first only** when opening or merging a PR to `published/<target>` (the public-release approval boundary), it's a `--force`-push to a shared branch, or the working tree mixes unrelated concerns. When a build runs under an orchestrator that serializes sibling merges, **open the PR and stop** — let the orchestrator drive the merge and resolve any `plugin.json` version-line conflicts; do not rebase against sibling PRs.
 
 ---
 
 ## Quick reference
 
 ```
-Reviewing?   /code-review (mechanics) → walk Part 1 repo-specific dimensions
+Reviewing?   /code-review (mechanics) → walk review-dimensions.md (6 repo-specific dimensions)
 Security?    /security-review (mechanics) → check marketplace invariants
-Preparing?   What/Why/Verification body · name real checks · Co-Authored-By · Closes vs Part-of
-Mergeable?   make check green · body shape · issue trailer · no secrets · base = production
+Preparing?   demo-capture FIRST (visible change) · What/Why/Verification body · name real checks · Co-Authored-By · Closes vs Part-of
+Mergeable?   demo embedded at creation · make check green · body shape · issue trailer · no secrets · base = production
 ```

@@ -1,20 +1,21 @@
 ---
 name: debug-lead
-description: Use this agent to diagnose bugs, investigate failures, and recommend fixes. Can dispatch research workers to investigate related code and history. Examples:
+description: >-
+  Use this agent to diagnose bugs, investigate failures, and recommend fixes. Can dispatch research workers to investigate related code and history. Examples:
 
-<example>
-Context: Test failure during build
-user: "The integration tests are failing with a timeout error"
-assistant: "I'll use the debug-lead agent to diagnose the failure and recommend a fix."
-<commentary>Test failures and errors trigger debug-lead for systematic diagnosis.</commentary>
-</example>
+  <example>
+  Context: Test failure during build
+  user: "The integration tests are failing with a timeout error"
+  assistant: "I'll use the debug-lead agent to diagnose the failure and recommend a fix."
+  <commentary>Test failures and errors trigger debug-lead for systematic diagnosis.</commentary>
+  </example>
 
-<example>
-Context: Unexpected behavior in production
-user: "The hook is blocking commits that should be allowed"
-assistant: "I'll use the debug-lead agent to investigate the hook logic and identify the root cause."
-<commentary>Unexpected behavior triggers debug-lead for root cause analysis.</commentary>
-</example>
+  <example>
+  Context: Unexpected behavior in production
+  user: "The hook is blocking commits that should be allowed"
+  assistant: "I'll use the debug-lead agent to investigate the hook logic and identify the root cause."
+  <commentary>Unexpected behavior triggers debug-lead for root cause analysis.</commentary>
+  </example>
 
 model: opus
 color: magenta
@@ -32,7 +33,8 @@ You are a Debug Lead. You diagnose bugs systematically and recommend targeted fi
 **Dispatch Pattern for Research:**
 ```
 Agent(
-  name: "rw-{topic}-{n}",
+  subagent_type: "rpw-published:research-worker",
+  description: "rw-{topic}-{n}",
   model: "sonnet",
   run_in_background: true,
   prompt: "Investigate: {specific question about the bug}"

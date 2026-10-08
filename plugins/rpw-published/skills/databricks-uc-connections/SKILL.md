@@ -12,7 +12,7 @@ A Databricks Unity Catalog connection is a workspace-level OAuth-injection proxy
 | **MCP_NATIVE** | `<host>/api/2.0/mcp/external/<name>` | Streamable HTTP MCP (JSON-RPC) | Falling back to a hosted, pre-built MCP server when our own custom MCP server doesn't exist yet or isn't working |
 | **HTTP_PROXY** | `<host>/api/2.0/unity-catalog/connections/<name>/proxy/<upstream-path>` | Pass-through HTTP — Databricks injects the user's upstream OAuth credential and forwards `METHOD path` to the upstream REST API rooted at `options.base_path` | Building a custom MCP server we control — our FastMCP tools call the upstream REST API via this URL |
 
-`connection_type` is `HTTP` for both (and `SLACK` for the bespoke Slack proxy). `options.is_mcp_connection: "true"` signals *additional* serving at `/api/2.0/mcp/external/<name>` — it does NOT disable the `/proxy/<path>` HTTP-pass-through path. So an MCP-native connection can also be used as a plain HTTP-proxy. Empirically verified against a `system_ai_agent_glean_mcp` connection on a Databricks workspace (returns HTTP 200 with real Glean REST data at `/proxy/search`).
+`connection_type` alone does not distinguish the two flavors. `options.is_mcp_connection: "true"` signals serving at `/api/2.0/mcp/external/<name>`; do not infer the wire protocol from the connection name.
 
 **Critical:** `uc-mcp-proxy` must be pointed at `/api/2.0/mcp/external/<name>` — pointing it at `/proxy/` returns a misleading `32600 Session terminated` error because that path doesn't speak JSON-RPC.
 
@@ -53,29 +53,14 @@ Why:
 - We haven't built a custom MCP server for this service yet (use the hosted one in the meantime), or
 - The custom server is broken / behind on features and we need an immediate-term workaround.
 
-When you DO fall back to MCP_NATIVE, prefer a connection name that's explicitly hosted-managed (typically the `system_ai_agent_*_mcp` cohort — see naming trap below). Don't rely on the connection's own name to tell you what flavor it is.
-
-## The `-mcp` naming trap
-
-On some workspaces, connection names ending in `-mcp` are misleading. Most of them are HTTP_PROXY despite the suffix; the actually-MCP-native ones are namespaced `system_ai_agent_*_mcp` and `system_ai_genie_*_mcp`. Always classify before assuming.
-
-| Service | HTTP_PROXY connection (prefer for custom impl) | MCP_NATIVE connection (fallback) |
-|---|---|---|
-| Glean | `glean-mcp`, **`system_ai_agent_glean_mcp` works as HTTP_PROXY too** | `system_ai_agent_glean_mcp` (⚠️ MCP-native serving has been seen broken — `base_path` misconfigured as `/rest/api/v1`; should be `/mcp/default`. HTTP_PROXY usage of the same connection is fine — only the MCP path is broken.) |
-| Atlassian (Jira + Confluence) | `jira-mcp`, `confluence-mcp` | `system_ai_agent_atlassian_mcp` (verified responding) |
-| GitHub | — (none yet) | `system_ai_agent_github_mcp` (verified responding), `github-uc` |
-| Google Drive / Docs / Sheets / Gmail | `google-mcp`, `google-docs-mcp`, `google-sheets-mcp`, `system_ai_agent_gmail`, `system_ai_agent_google_drive` | none — HTTP only |
-| Slack | `slack` (connection_type=SLACK) | none — HTTP only |
-| PagerDuty | `pagerduty-mcp` | none — HTTP only |
-
-Always re-run the enumerator before trusting this table — Databricks workspace state changes.
+When you fall back to MCP_NATIVE, use a connection the workspace administrator documents as hosted-managed. Do not rely on a connection's name or an old inventory: classify the current workspace response every time.
 
 ## Picking a UC connection: decision flow
 
 1. Run the enumerator. Note the classification for each connection that targets your upstream service.
 2. If we ship (or are building) a custom MCP server for this service → pick the **HTTP_PROXY** connection. Wire our FastMCP tools to call the upstream REST API via `<host>/api/2.0/unity-catalog/connections/<name>/proxy/<upstream-path>` with REST verbs. `uc-mcp-proxy` is not in the chain.
 3. If no custom server exists yet → pick the **MCP_NATIVE** connection and route through `uc-mcp-proxy --url <host>/api/2.0/mcp/external/<name>`. Track the gap as a TODO for a custom impl.
-4. If multiple of the same flavor exist (e.g. a workspace exposing `google-mcp`, `google-docs-mcp`, `system_ai_agent_google_drive` all HTTP_PROXY for Google) → check each connection's `options.base_path` to see which upstream REST root it lands on, and pick the one that covers your tools' surface area.
+4. If multiple connections of the same flavor exist, check each connection's `options.base_path` and administrator documentation. Pick the one that covers the required tool surface.
 
 ## Common failure mode this skill prevents
 
@@ -83,12 +68,17 @@ Always re-run the enumerator before trusting this table — Databricks workspace
 
 1. **Wrong URL** — `uc-mcp-proxy` was pointed at `/api/2.0/unity-catalog/connections/<name>/proxy/` instead of `/api/2.0/mcp/external/<name>`. MCP-native connections return 404 at the `/proxy/` path; the proxy reports that as a terminated session.
 2. **HTTP_PROXY connection mistakenly passed to `uc-mcp-proxy`** — HTTP_PROXY connections don't speak JSON-RPC at any path. Use REST verbs through `/proxy/` directly, not `uc-mcp-proxy`.
-3. **Misconfigured `options.base_path` on a system-managed MCP_NATIVE connection** — e.g. a `system_ai_agent_glean_mcp` connection with `base_path=/rest/api/v1` (Glean's REST root) instead of the documented `/mcp/default`, so the proxy 307-redirects to the wrong upstream path. This is a Databricks-side fix; the connection is read-only and system-owned, so a workspace admin or Databricks support must update it (or create a non-system replacement).
+3. **Misconfigured `options.base_path` on a managed MCP_NATIVE connection** — the connection redirects to an upstream REST path instead of its MCP path. A workspace administrator or Databricks support must update a read-only managed connection.
 
 Auth is rarely the bug at this point. Classify the connection first, then verify the URL path.
+
+### Two 401s that look like broken connections but are not
+
+- **`UNAUTHENTICATED … Credential for user identity(N) is not found`** — an `OAUTH_U2M_MAPPING` connection with no credential for *you* yet. The message carries the exact `<host>/explore/connections/<name>` login URL; a human completes that browser OAuth once, per user. Nothing to fix in code.
+- **`401 Invalid Secret / Not allowed`** — the upstream service can reject a forwarded token when a service-specific header is missing. Check the upstream API's documented auth-header requirements before concluding the connection is dead.
 
 ## Related
 
 - `mcp-setup` skill — uses this classifier when picking the source per server in `server_registry.py`.
 - `mcp-standards` skill — when creating a new MCP server that needs Databricks auth, follow the HTTP_PROXY-first preference here.
-- `lib/resolvers/uc_proxy.py` in `rpw-published/mcp-servers/` and `rpw-private/mcp-servers/` — runtime resolver. **Currently constructs the wrong URL for MCP_NATIVE connections** (it always uses `/api/2.0/unity-catalog/connections/<name>/proxy/`). Needs a flavor-aware path: `/proxy/` for HTTP_PROXY, `/api/2.0/mcp/external/<name>` for MCP_NATIVE. Tracked in epic #113.
+- The resolver under `mcp-servers/lib/resolvers/uc_proxy.py` must use a flavor-aware path: `/proxy/` for HTTP_PROXY and `/api/2.0/mcp/external/<name>` for MCP_NATIVE.

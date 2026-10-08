@@ -26,6 +26,19 @@ MCP server for Google Tasks with **assigned-task visibility** (`showAssigned=tru
 
   If your default Python is <3.12: `uv sync --python 3.12`
 
+3. **Authenticate and validate the shared ADC grant**:
+
+   ```bash
+   cd "$CLAUDE_PLUGIN_ROOT/skills/mcp-setup"
+   uv run python google_adc.py
+   ```
+
+   The canonical requirements are in `skills/mcp-setup/server_registry.py`.
+   A valid ADC token still fails if it lacks the Tasks scope. If validation gives
+   a re-auth command, run its full union exactly: `--scopes` replaces the existing
+   ADC grant, and the union preserves Docs, Drive, Sheets, Slides, Vertex, identity,
+   and Tasks access.
+
 ## Run
 
 From this directory (defaults to `APP_ENV=dev`):

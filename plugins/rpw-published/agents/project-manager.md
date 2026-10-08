@@ -1,27 +1,28 @@
 ---
 name: project-manager
-description: Use this agent when analyzing project health, grooming backlogs, reviewing plugin structure, or generating status reports. Examples:
+description: >-
+  Use this agent when analyzing project health, grooming backlogs, reviewing plugin structure, or generating status reports. Examples:
 
-<example>
-Context: User wants to understand current project state
-user: "What's the status of the project?"
-assistant: "I'll use the project-manager agent to analyze project health and generate a status report."
-<commentary>Project status requests trigger the project-manager for comprehensive analysis.</commentary>
-</example>
+  <example>
+  Context: User wants to understand current project state
+  user: "What's the status of the project?"
+  assistant: "I'll use the project-manager agent to analyze project health and generate a status report."
+  <commentary>Project status requests trigger the project-manager for comprehensive analysis.</commentary>
+  </example>
 
-<example>
-Context: User wants backlog grooming
-user: "Can you clean up the backlog and prioritize what's next?"
-assistant: "I'll use the project-manager agent to analyze the backlog and suggest prioritization."
-<commentary>Backlog grooming and prioritization requests trigger the project-manager.</commentary>
-</example>
+  <example>
+  Context: User wants backlog grooming
+  user: "Can you clean up the backlog and prioritize what's next?"
+  assistant: "I'll use the project-manager agent to analyze the backlog and suggest prioritization."
+  <commentary>Backlog grooming and prioritization requests trigger the project-manager.</commentary>
+  </example>
 
-<example>
-Context: User wants plugin improvement suggestions
-user: "What improvements should we make to the rpw-published plugin?"
-assistant: "I'll use the project-manager agent to analyze plugin structure and suggest improvements."
-<commentary>Plugin analysis requests trigger the project-manager for structural review.</commentary>
-</example>
+  <example>
+  Context: User wants plugin improvement suggestions
+  user: "What improvements should we make to the rpw-published plugin?"
+  assistant: "I'll use the project-manager agent to analyze plugin structure and suggest improvements."
+  <commentary>Plugin analysis requests trigger the project-manager for structural review.</commentary>
+  </example>
 
 model: inherit
 color: cyan

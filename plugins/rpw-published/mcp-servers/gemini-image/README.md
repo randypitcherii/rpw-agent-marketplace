@@ -8,10 +8,15 @@ The server uses **Vertex AI authenticated with gcloud Application Default Creden
 
 ## Setup
 
-1. Make sure `gcloud` is installed and ADC is authenticated:
+1. Make sure `gcloud` is installed and validate the shared ADC grant:
+   ```bash
+   cd "$CLAUDE_PLUGIN_ROOT/skills/mcp-setup"
+   uv run python google_adc.py
    ```
-   gcloud auth application-default login
-   ```
+   The canonical scope registry is `skills/mcp-setup/server_registry.py`. If it
+   reports missing scopes, use its generated full-union login command. `--scopes`
+   replaces the ADC grant, so a Vertex-only command could break other ADC-backed
+   Google MCP servers.
 2. Use a GCP project that has the Vertex AI API enabled.
 3. Copy `template.env` to `dev.env` (gitignored) and set your own project ID. The defaults already point at Vertex AI:
    ```

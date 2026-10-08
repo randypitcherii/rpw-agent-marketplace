@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build claim protocol — automatic in-progress claim + dispatch honor-check.
 #
-# GitHub Issue #188. The problem: parallel Superset workspaces / builds
+# GitHub Issue #188. The problem: parallel dispatched sessions / builds
 # double-pick issues because the claim step is *manual* and gets skipped (the
 # 2026-06 no-claim dispatch incident — four issues built locally with zero GitHub
 # markers). GitHub has no server-side primitive that rejects a second
@@ -12,13 +12,13 @@
 #
 #   build_claim <issue>
 #       Apply the `status: in-progress` label and post a structured claim
-#       comment carrying branch / worktree / host / ISO-timestamp / Superset
-#       workspace id / agent. Idempotent: re-running on an issue this branch
+#       comment carrying branch / worktree / host / ISO-timestamp / optional
+#       session + agent id. Idempotent: re-running on an issue this branch
 #       already claimed does not repost. Best-effort — NEVER fails its caller
 #       (build-init must succeed offline / in tests), so a claim that can't be
 #       written degrades to a warning.
 #
-#   build_honor_check <issue>
+#   build_honor_check <issue> [my_supervisor]
 #       Read the issue's labels + claim comments and decide whether it is
 #       already claimed by a DIFFERENT branch. Exits nonzero on
 #       claimed-by-other (a skip/warn signal for dispatch points); exits 0 for
@@ -26,13 +26,21 @@
 #       blocks — pre-protocol issues like #188 itself carry a manual label and
 #       must not false-alarm).
 #
+#       A branch alone cannot tell "another worker of MY wave" from "another
+#       wave's supervisor" (#822), and those need opposite responses: the first
+#       is the inherited pre-claim every wave worker expects, the second is the
+#       #823 P0 — two supervisors dispatching the same issue. So claims carry
+#       the owning supervisor and claimed-by-other reports a `relation=`:
+#       sibling-worker (same supervisor, exit 3) / foreign-supervisor (a
+#       different live supervisor, exit 4 — report and skip, never overwrite) /
+#       unknown (pre-#822 claim with no supervisor recorded, exit 3).
+#
 #   build_claim_audit
 #       Fail-loud backstop. Scan sibling worktrees' recent commits for `#N`
 #       references and ALARM when an issue carries in-progress commits but no
 #       `status: in-progress` label (= the claim protocol was skipped — the
-#       exact signal that actually caught that incident). Best-effort
-#       Superset cross-ref when the CLI is present. Bounded gh calls so it
-#       stays inside the /build Phase 0 budget.
+#       exact signal that actually caught that incident). Bounded gh calls so
+#       it stays inside the /build Phase 0 budget.
 #
 # Log prefix: 'build-claim:'
 
@@ -47,31 +55,62 @@ _claim_current_branch() {
 }
 
 _claim_worktree_root() {
-  # Prefer the Superset-provided path; fall back to git.
-  if [ -n "${SUPERSET_WORKSPACE_PATH:-}" ]; then
-    echo "$SUPERSET_WORKSPACE_PATH"
+  # Prefer the workspace an omnigent session was bound to; fall back to git.
+  if [ -n "${OMNIGENT_RUNNER_WORKSPACE:-}" ]; then
+    echo "$OMNIGENT_RUNNER_WORKSPACE"
   else
     git rev-parse --show-toplevel 2>/dev/null || echo "unknown"
   fi
+}
+
+# _claim_supervisor_id — which wave supervisor session this claim belongs to.
+#
+# Same ladder as scripts/wave_owner.py's supervisor_id(), kept in sync by
+# intent, not import: this file is a standalone plugin script that must run in a
+# repo with no Python of ours (#840 is the portability half of that story).
+#   1. RPW_WAVE_SUPERVISOR — set by the supervisor; survives every dispatch path
+#      because a spawned claim inherits its env.
+#   2. the Omnigent session id, recovered from the runner log filename (the same
+#      id `sys_session_list` reports), which is stable across a resumed session.
+#   3. the harness session id.
+#   4. none — an ad-hoc claim outside a wave, which is the common case.
+_claim_supervisor_id() {
+  if [ -n "${RPW_WAVE_SUPERVISOR:-}" ]; then
+    printf '%s' "${RPW_WAVE_SUPERVISOR}" | tr -s '[:space:]' '_'
+    return 0
+  fi
+  local log id
+  log="$(basename "${OMNIGENT_PROCESS_LOG_FILE:-}" 2>/dev/null || echo "")"
+  id="$(printf '%s' "$log" | sed -nE 's/^runner-([0-9a-f]{16,})-[0-9]{8}-.*$/\1/p')"
+  [ -n "$id" ] && { printf '%s' "$id"; return 0; }
+  for var in CLAUDE_CODE_SESSION_ID CODEX_SESSION_ID CURSOR_SESSION_ID \
+             OPENCODE_SESSION_ID GEMINI_SESSION_ID; do
+    eval "id=\${$var:-}"
+    [ -n "$id" ] && { printf '%s' "$id" | tr -s '[:space:]' '_'; return 0; }
+  done
+  printf 'none'
 }
 
 # ---------------------------------------------------------------------------
 # Pure rendering
 # ---------------------------------------------------------------------------
 
-# _claim_sentinel <branch> <worktree> <host> <ts> <workspace> <agent>
+# _claim_sentinel <branch> <worktree> <host> <ts> <workspace> <agent> [supervisor]
 # Machine-parseable marker embedded in the claim comment. Each key=value pair
 # is space-delimited so a fixed-string `grep -F "branch=$b "` is reliable.
+# `supervisor` is appended LAST and defaults to `none`: readers key on
+# `branch=` first, and a pre-#822 claim simply has no supervisor field.
 _claim_sentinel() {
-  printf '<!-- rpw-claim branch=%s worktree=%s host=%s ts=%s workspace=%s agent=%s -->' \
-    "$1" "$2" "$3" "$4" "${5:-none}" "${6:-none}"
+  printf '<!-- rpw-claim branch=%s worktree=%s host=%s ts=%s workspace=%s agent=%s supervisor=%s -->' \
+    "$1" "$2" "$3" "$4" "${5:-none}" "${6:-none}" "${7:-none}"
 }
 
-# _claim_comment_body <issue> <branch> <worktree> <host> <ts> <workspace> <agent>
+# _claim_comment_body <issue> <branch> <worktree> <host> <ts> <workspace> <agent> [supervisor]
 _claim_comment_body() {
   local issue="$1" branch="$2" worktree="$3" host="$4" ts="$5" ws="$6" agent="$7"
+  local supervisor="${8:-none}"
   cat <<BODY
-🔒 **Claimed for active work** by a \`/build\` session / Superset workspace.
+🔒 **Claimed for active work** by a \`/build\` session / dispatched agent session.
 
 | field | value |
 |-------|-------|
@@ -80,17 +119,18 @@ _claim_comment_body() {
 | host | \`${host}\` |
 | workspace | \`${ws:-none}\` |
 | agent | \`${agent:-none}\` |
+| supervisor | \`${supervisor}\` |
 | claimed | \`${ts}\` |
 
 A second dispatch that finds this claim should **skip or warn** rather than
-double-pick the issue. If this claim is stale (the workspace was abandoned),
+double-pick the issue. If this claim is stale (the worktree was abandoned),
 clear it with:
 
 \`\`\`
 gh issue edit ${issue} --remove-label "${CLAIM_LABEL}"
 \`\`\`
 
-$(_claim_sentinel "$branch" "$worktree" "$host" "$ts" "$ws" "$agent")
+$(_claim_sentinel "$branch" "$worktree" "$host" "$ts" "$ws" "$agent" "$supervisor")
 BODY
 }
 
@@ -98,21 +138,25 @@ BODY
 # Pure decision logic
 # ---------------------------------------------------------------------------
 
-# _honor_decide <current_branch>   (reads `gh issue view --json labels,comments`
-# JSON on stdin)
+# _honor_decide <current_branch> [my_supervisor]
+#   (reads `gh issue view --json labels,comments` JSON on stdin)
 # Prints one of:
 #   clear                               (no in-progress label)
 #   own-claim branch=<b>                (claimed by this branch)
 #   unsentineled                        (label present, no structured claim)
-#   claimed-by-other branch=<b> ts=<t> workspace=<w>
-# Exit 0 for the first three; nonzero (3) for claimed-by-other.
+#   claimed-by-other branch=<b> ts=<t> workspace=<w> supervisor=<s> relation=<r>
+# Exit 0 for the first three. claimed-by-other exits 3, or 4 when `relation` is
+# foreign-supervisor — a different wave's live supervisor already holds this
+# issue, which a caller must report and skip rather than overwrite (#822).
 _honor_decide() {
-  local current_branch="${1:?Usage: _honor_decide <current_branch>}"
+  local current_branch="${1:?Usage: _honor_decide <current_branch> [my_supervisor]}"
+  local my_supervisor="${2:-}"
   # NOTE: program goes via `-c` (an argv arg) so stdin stays the issue JSON.
   local prog
   prog=$(cat <<'PY'
 import json, re, sys
 current = sys.argv[1]
+mine = (sys.argv[2] if len(sys.argv) > 2 else "").strip() or "none"
 try:
     data = json.load(sys.stdin)
 except Exception:
@@ -139,12 +183,23 @@ b = claim.get("branch", "")
 if b == current:
     print(f"own-claim branch={b}"); sys.exit(0)
 
+# Whose claim is it? A branch alone cannot separate the inherited pre-claim a
+# wave worker is TOLD to expect from a second wave racing the same issue (#822).
+theirs = claim.get("supervisor", "none")
+if "none" in (theirs, mine) or "unknown" in (theirs, mine):
+    relation, rc = "unknown", 3          # pre-#822 claim, or no wave context
+elif theirs == mine:
+    relation, rc = "sibling-worker", 3   # my own wave's claim; my brief names it
+else:
+    relation, rc = "foreign-supervisor", 4
+
 print(f"claimed-by-other branch={b} ts={claim.get('ts','?')} "
-      f"workspace={claim.get('workspace','?')}")
-sys.exit(3)
+      f"workspace={claim.get('workspace','?')} supervisor={theirs} "
+      f"relation={relation}")
+sys.exit(rc)
 PY
 )
-  python3 -c "$prog" "$current_branch"
+  python3 -c "$prog" "$current_branch" "$my_supervisor"
 }
 
 # _claim_has_branch_sentinel <branch>   (reads issue JSON with comments on stdin)
@@ -219,14 +274,18 @@ _claim_default_branch() {
 # Orchestration
 # ---------------------------------------------------------------------------
 
-# build_claim <issue> — claim an issue (label + idempotent comment).
+# build_claim <issue> [supervisor] — claim an issue (label + idempotent comment).
 # Best-effort: always returns 0 so it can be folded into build-init.
+# `supervisor` names the wave supervisor this claim belongs to; omitted, it is
+# derived from the environment the claim inherited (_claim_supervisor_id).
 build_claim() {
   local issue="${1:-}"
+  local supervisor="${2:-}"
   if [ -z "$issue" ]; then
-    echo "build-claim: usage: build_claim <issue>" >&2
+    echo "build-claim: usage: build_claim <issue> [supervisor]" >&2
     return 0
   fi
+  [ -n "$supervisor" ] || supervisor="$(_claim_supervisor_id)"
 
   if ! command -v "${GH:-gh}" >/dev/null 2>&1; then
     echo "build-claim: gh unavailable — skipping claim of #$issue (best-effort)" >&2
@@ -238,12 +297,15 @@ build_claim() {
   worktree="$(_claim_worktree_root)"
   host="$(hostname 2>/dev/null || echo unknown)"
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  ws="${SUPERSET_WORKSPACE_ID:-none}"
-  agent="${SUPERSET_AGENT_ID:-none}"
+  # Omnigent injects no session-id env var (ADR-2026-08-14), so a dispatcher
+  # that knows the conversation_id passes it in explicitly. NEVER source these
+  # from any runner authentication value; those are credentials, not session ids.
+  ws="${RPW_SESSION_ID:-none}"
+  agent="${RPW_AGENT_ID:-none}"
 
   # Surface any conflicting claim loudly, but never block (warn-only at claim
   # time — the worktree already exists; prevention happens earlier at dispatch).
-  build_honor_check "$issue" || true
+  build_honor_check "$issue" "$supervisor" || true
 
   # Label is idempotent: --add-label on an already-present label is a no-op.
   if ! _gh issue edit "$issue" --add-label "$CLAIM_LABEL" >/dev/null 2>&1; then
@@ -259,7 +321,8 @@ build_claim() {
   fi
 
   local body
-  body="$(_claim_comment_body "$issue" "$branch" "$worktree" "$host" "$ts" "$ws" "$agent")"
+  body="$(_claim_comment_body "$issue" "$branch" "$worktree" "$host" "$ts" "$ws" \
+    "$agent" "$supervisor")"
   if _gh issue comment "$issue" --body "$body" >/dev/null 2>&1; then
     echo "build-claim: claimed #$issue (label + comment) on branch '$branch'"
   else
@@ -268,9 +331,12 @@ build_claim() {
   return 0
 }
 
-# build_honor_check <issue> — dispatch-time check. Nonzero on claimed-by-other.
+# build_honor_check <issue> [my_supervisor] — dispatch-time check.
+# Nonzero on claimed-by-other: 3 normally, 4 for a foreign live supervisor.
 build_honor_check() {
-  local issue="${1:?Usage: build_honor_check <issue>}"
+  local issue="${1:?Usage: build_honor_check <issue> [my_supervisor]}"
+  local my_supervisor="${2:-}"
+  [ -n "$my_supervisor" ] || my_supervisor="$(_claim_supervisor_id)"
 
   if ! command -v "${GH:-gh}" >/dev/null 2>&1; then
     echo "build-claim: honor-check #$issue skipped (gh unavailable)" >&2
@@ -279,11 +345,27 @@ build_honor_check() {
 
   local view verdict rc
   view="$(_gh issue view "$issue" --json labels,comments 2>/dev/null || echo '{}')"
-  verdict="$(printf '%s' "$view" | _honor_decide "$(_claim_current_branch)")"
+  verdict="$(printf '%s' "$view" | _honor_decide "$(_claim_current_branch)" "$my_supervisor")"
   rc=$?
 
   echo "build-claim: honor-check #$issue: $verdict"
   case "$verdict" in
+    *relation=foreign-supervisor*)
+      {
+        echo "⛔ build-claim: #$issue is claimed by a DIFFERENT wave's supervisor:"
+        echo "     $verdict"
+        echo "   Two supervisors on one issue is the #823 P0. Report this claim and"
+        echo "   SKIP the issue — never overwrite another supervisor's claim."
+      } >&2
+      ;;
+    *relation=sibling-worker*)
+      {
+        echo "⚠️  build-claim: #$issue is already claimed by another branch of THIS"
+        echo "   wave (same supervisor):"
+        echo "     $verdict"
+        echo "   Expected for an inherited pre-claim (#568); a surprise otherwise."
+      } >&2
+      ;;
     claimed-by-other*)
       {
         echo "⛔ build-claim: #$issue is already claimed by another workspace:"
@@ -388,3 +470,84 @@ EOF
   echo "build-claim: audit clean — all in-flight worktree commits are claimed."
   return 0
 }
+
+# ---------------------------------------------------------------------------
+# CLI entry point (#840/#842) — the claim protocol without a Makefile
+# ---------------------------------------------------------------------------
+#
+# Everything above is a sourceable library, and for a long time `make
+# build-claim` / `make build-honor-check` were the ONLY way to reach it. Those
+# targets live in one repo's Makefile, so a supervisor running a wave anywhere
+# else found nothing to call and improvised a bare `status: in-progress` label
+# (#840): a read-then-write with no compare-and-swap, which is how two
+# supervisors each read "unclaimed" and both dispatched at the same issue on
+# 2026-08-05.
+#
+# So this file is also a program. Executed directly it dispatches verbs; sourced
+# it is unchanged, which is what keeps `make build-claim` and every existing
+# caller working:
+#
+#   bash build-claim.sh claim <issue> [supervisor]
+#   bash build-claim.sh honor-check <issue> [supervisor]
+#   bash build-claim.sh audit
+#
+# It deliberately needs nothing of ours: bash, git, gh, and the system `python3`
+# for the JSON decisions. No `make`, no uv, no venv, no repo layout — it runs in
+# a repo that has none of our Python (the portability half of #840). All git/gh
+# I/O is relative to the CURRENT working directory, so `( cd <worktree> && bash
+# build-claim.sh claim 6 )` stamps that worktree's branch, which is the #568
+# ordering the wave protocol depends on.
+#
+# `honor-check` exits with the library's real codes — 0 dispatchable, 3
+# claimed-by-other, 4 foreign-supervisor — because there is no `make` in the
+# middle to collapse them to 2 (#1100). Callers may still parse the
+# `relation=<r>` token on stdout; that contract is unchanged and remains the one
+# that works through `make`.
+
+build_claim_usage() {
+  cat >&2 <<'USAGE'
+usage: build-claim.sh <verb> [args]
+
+  claim <issue> [supervisor]        apply the in-progress label + claim comment
+  honor-check <issue> [supervisor]  is this issue claimed by another branch?
+                                    exit 0 dispatchable / 3 claimed-by-other /
+                                    4 a different wave's live supervisor
+  audit                             alarm on in-flight commits with no claim
+  help                              this message
+
+Runs against the git repo of the CURRENT directory. No make, no uv, no venv.
+USAGE
+}
+
+build_claim_main() {
+  local verb="${1:-help}"
+  shift 2>/dev/null || true
+  case "$verb" in
+    claim)
+      [ -n "${1:-}" ] || { echo "build-claim: claim needs an issue number" >&2; build_claim_usage; return 64; }
+      build_claim "$@"
+      ;;
+    honor-check|honor_check)
+      [ -n "${1:-}" ] || { echo "build-claim: honor-check needs an issue number" >&2; build_claim_usage; return 64; }
+      build_honor_check "$@"
+      ;;
+    audit|claim-audit)
+      build_claim_audit
+      ;;
+    help|-h|--help)
+      build_claim_usage; return 0
+      ;;
+    *)
+      echo "build-claim: unknown verb '$verb'" >&2
+      build_claim_usage
+      return 64
+      ;;
+  esac
+}
+
+# Sourced (`source build-claim.sh`) -> library only, nothing runs.
+# Executed (`bash build-claim.sh <verb>`) -> dispatch.
+if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
+  build_claim_main "$@"
+  exit $?
+fi

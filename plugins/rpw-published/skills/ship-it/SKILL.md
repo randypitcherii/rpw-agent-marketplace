@@ -1,27 +1,57 @@
 ---
 name: ship-it
-description: One-command post-merge close-out for an approved PR. Trigger on "ship it", "land this PR", "close out PR #N", "merge and clean up", "land the plane". Squash-merges (with the transient not-mergeable retry), confirms the linked issue closed, cleans worktree/branches, detects and repairs an unbumped ship (the #210 bump race), refreshes clones, runs claude plugin update, and optionally the gated public publish. NOT for prepping or reviewing a PR — that's code-review-and-pr.
+description: One-command post-merge close-out for an approved PR. Trigger on "ship it", "land this PR", "close out PR #N", "merge and clean up", "land the plane". Ships unless a live wave CLAIMS the issue (file overlap never holds a PR), then squash-merges with the transient-retry loop, confirms the issue closed, cleans worktree/branches, verifies the auto-bump (repairing if not — #480), refreshes clones and plugins, plus the gated publish. NOT for prepping or reviewing a PR — that's code-review-and-pr.
 ---
 
 # Ship It — post-merge close-out
 
-`code-review-and-pr` stops at "ready to merge?". This skill is the tail after that: merge → confirm close → clean → version-check → clone refresh → plugin update → (optionally) publish. Steps 1–6 run **autonomously** for PRs whose base is the integration branch (`production`); step 7 runs **only on explicit request**.
+`code-review-and-pr` stops at "ready to merge?". This skill is the tail after that: wave boundary → merge → confirm close → clean → version-check → clone refresh → plugin update → (optionally) publish. Steps 0–6 run **autonomously** for PRs whose base is the integration branch (`production`); step 7 runs **only on explicit request**.
 
 ## When NOT to run
 
 - **Prepping or reviewing** a PR → `code-review-and-pr`.
-- **Under a wave supervisor / build orchestrator that serializes merges** → open the PR and stop; the supervisor drives the merge (see `wave-supervisor`). Never ship-it around an orchestrator.
+- The PR closes an issue a **live wave has claimed**, or the merge would touch that wave's PRs, workers, or worktrees → hand it back to the supervisor (see `wave-supervisor` and step 0). A wave merely *editing the same files* is not this case: ship, and whoever lands last rebases.
 - Base branch is a **release/publish branch** or the merge triggers a public release → confirm with the user first.
 
 ## Pipeline
 
 Input: a PR number (or infer the current branch's open PR via `gh pr view --json number`).
 
+### 0. Wave boundary — stay out of a wave's lane, not out of its files
+
+**File overlap is explicitly NOT a reason to hold a PR, and there is no conflict-prediction check here.** `production` is the integration branch; a wave rebases onto it like everything else. **Whoever arrives last resolves the conflict** — that is the whole convention, it is cheap, and it is the wave's job when the wave is the one that lands second. Holding a finished, approved PR because a `wave/*` branch happens to edit the same file just converts a routine rebase into an indefinite block, and the wave still has to rebase either way.
+
+What you must not do is **operate inside a wave's lane**. Never, for a wave that holds the issue:
+
+- take, re-assign, comment-as-owner on, or close its **claimed issues** (`wave: owned`);
+- merge, close, retarget, or push to its **PRs**;
+- touch its **worker branches**, **worktrees**, or running **supervisor sessions**;
+- pick up an issue the wave has claimed just because it looks idle — a `stale` lease is not a free issue. Lease liveness is a heartbeat, never process existence (#886), and a supervisor deep in a long task routinely lets the heartbeat lapse while merging steadily. Measured case: a lease read `stale` at 205m against a 45m TTL while its session had been active four minutes earlier.
+
+So the check is about **ownership of the work**, not about the diff:
+
+```bash
+# Is the issue THIS PR closes claimed by a live wave?
+gh issue list --label 'wave: owned' --state open --json number,title
+gh issue view <issue-this-PR-closes> --json labels,assignees
+```
+
+Claimed by a wave → it is not yours to ship; hand it back and say so. Not claimed → ship it, conflicts and all.
+
 ### 1. Merge (with the transient-retry loop)
 
 ```bash
-gh pr merge <N> --squash --delete-branch
+gh pr merge <N> --squash              # NOT --delete-branch (see below)
+git push origin --delete <branch>     # delete the remote ref yourself
 ```
+
+**Why not `--delete-branch` (#1231):** from a worktree it *always* fails its local half — gh tries to check out the base branch to delete the local ref, and the base is checked out in the main clone:
+
+```
+failed to run git: fatal: 'production' is already used by worktree at '/Users/<you>/projects/rpw-agent-marketplace'
+```
+
+The merge and the remote delete already succeeded, so the nonzero exit reads like a failed merge when nothing is wrong — and the local branch survives. Worktree development is the house standard, so this fires on **every** merge: the largest single source of the 74 orphaned branches #1231 measured. Delete the remote ref explicitly; the local ref is step 3's job.
 
 GitHub's mergeability computation is eventually consistent: right after approval or a fresh push, the merge can fail with *"Pull Request is not mergeable"* even though nothing is wrong. That failure is usually **transient**:
 
@@ -43,17 +73,28 @@ gh pr view <N> --json closingIssuesReferences,body
 From the main clone (not inside the doomed worktree):
 
 ```bash
+git fetch --prune                       # the remote ref you deleted in step 1
 git worktree list                       # find the feature worktree, if any
 git worktree remove <path>              # --force only for disposable leftovers
-git branch -D <branch>                  # if the local branch persists
-git fetch --prune                       # remote branch was deleted by --delete-branch
+git branch -D <branch>                  # -D, not -d: squash rewrote the SHA, so
+                                        # -d refuses forever. Step 1's merge is
+                                        # the proof that authorizes it.
 ```
 
-Superset workspace deletion is owned by the `superset-launch` skill — hand off there rather than reimplementing.
+**Can't tear down your own worktree? Point at the sweep, never at a manual command.** `ExitWorktree` no-ops on worktrees it did not create — most of them — so the agent that finishes the work routinely cannot clean up after it (#1231):
 
-### 4. Version check + repair (the load-bearing step — #210)
+```bash
+make branch-hygiene                     # dry run: what is provably dead + evidence
+make branch-hygiene APPLY=1             # reap it
+```
 
-**Why:** the per-PR auto-bump Action pushes its bump commit to the PR head branch *asynchronously* and can lose the race against `gh pr merge --squash` — the squash captures the pre-bump tree, the branch is deleted, and the plugin ships to `production` **unbumped**. Then `claude plugin update` reports "already at latest" and never delivers the fix to version-detecting consumers. This has happened for real (#198 shipped at the old version; #372 shipped unbumped at 2026.07.1203).
+It is repo-wide and refuses a dirty tree, unpushed commits, no merged PR, or an active claim — so leaving a branch to it is safe, not sloppy.
+
+Dispatched-session teardown (close the session, remove the worktree, prune the branch) is owned by the `dispatch-launch` skill — hand off there rather than reimplementing.
+
+### 4. Version check + repair (the safety net — #480)
+
+**Why:** since #480 the auto-bump runs post-merge on `production` (the old per-PR bump lost its race against `gh pr merge --squash` three times in two days — #450/#467/#477). The race is gone by construction, but this step stays as the safety net: confirm the post-merge workflow actually ran and bumped (workflow failure, skipped run, or a pre-#480 merge being closed out late all still ship unbumped, leaving `claude plugin update` reporting "already at latest").
 
 **Detect** — in the production clone after pulling the merge (for an older merge, substitute `<merge-sha>` for `HEAD`):
 
@@ -99,15 +140,16 @@ claude plugin update rpw-published@rpw-agent-marketplace   # repeat per affected
 Never part of the autonomous tail. Only when the user explicitly asks to publish:
 
 ```bash
-make publish-public
+make publish-promote TARGET=<slug> DESCRIPTION='<review summary>'
 ```
 
-This filters the tree per `.public-publish.yml`, pushes a `publish-staging` branch to the public mirror, runs the sensitive-content check locally (CI can't — IP ACL), and opens a PR against the mirror's default branch. **Stop there.** The human reviews the actual public diff and **their merge IS the publish** — never auto-merge the mirror PR. The `PUBLIC_REPO_RELEASE_CONFIRM` gate applies. Consider `make release-notes` / `make tag-release` alongside, per the release flow in AGENTS.md.
+This opens a promotion PR to the protected private `published/<target>` branch. **Stop there.** The human reviews that complete artifact diff. After merge, trusted CI performs content-only delivery from a fresh public-target clone and merges the target-local PR after its required checks pass. Consider `make release-notes` / `make tag-release` alongside, per the release flow in AGENTS.md.
 
 ## Report shape
 
 End with one tidy summary:
 
+- **Wave boundary:** issue unclaimed — cleared to ship (file overlap with wave #W, if any, is the later merger's rebase)
 - **Merged:** PR #N → `production` @ `<sha>` (retries needed: n)
 - **Issue:** #M closed (auto / manual) — or left open (`Part of`)
 - **Cleanup:** worktree removed, branches pruned

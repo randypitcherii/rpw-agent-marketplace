@@ -10,18 +10,20 @@ class TestGoogleDocsRunMcpRequired(unittest.TestCase):
     def test_required_contains_gdocs_quota_project(self):
         self.assertIn("GDOCS_QUOTA_PROJECT", run_mcp.REQUIRED)
 
-    def test_required_contains_gdocs_target_folder_id(self):
-        self.assertIn("GDOCS_TARGET_FOLDER_ID", run_mcp.REQUIRED)
+    def test_target_folder_id_is_optional(self):
+        # #476 made the folder optional (no-folder mode); requiring it again would
+        # break every launch that relies on that mode.
+        self.assertNotIn("GDOCS_TARGET_FOLDER_ID", run_mcp.REQUIRED)
 
     def test_validate_required_env_detects_missing(self):
         with patch.dict("os.environ", {}, clear=True):
             from lib.env_loader import validate_required_env
 
             missing = validate_required_env(run_mcp.REQUIRED)
-            self.assertEqual(missing, ["GDOCS_QUOTA_PROJECT", "GDOCS_TARGET_FOLDER_ID"])
+            self.assertEqual(missing, ["GDOCS_QUOTA_PROJECT"])
 
     def test_validate_required_env_passes_when_set(self):
-        env = {"GDOCS_QUOTA_PROJECT": "my-project", "GDOCS_TARGET_FOLDER_ID": "folder123"}
+        env = {"GDOCS_QUOTA_PROJECT": "my-project"}
         with patch.dict("os.environ", env, clear=True):
             from lib.env_loader import validate_required_env
 

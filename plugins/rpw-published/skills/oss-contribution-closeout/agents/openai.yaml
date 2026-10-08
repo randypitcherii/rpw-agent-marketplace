@@ -1,0 +1,4 @@
+interface:
+  display_name: "OSS Contribution Close-out"
+  short_description: "Close superseded public-repo contributions"
+  default_prompt: "Use $oss-contribution-closeout to link and close my superseded public-repo contributions."

@@ -11,11 +11,12 @@ Network calls go through ``auth.api`` (module-qualified so tests patch a single
 point); tab-body lookups use the recursive ``tabs._find_tab_by_id``.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import auth
 import tabs
-from config import DEFAULT_CODE_FONT, PARAGRAPH_SPACE_BELOW_PT
+import config
+from config import CODE_FONT, LIST_INDENT_PER_LEVEL_PT
 from markdown_inline import (
     _children_contain_image,
     _image_url,
@@ -28,27 +29,62 @@ from markdown_inline import (
 )
 
 
-def _insert_markdown(doc_id: str, content: str, index: int = 1, tab_id: Optional[str] = None,
-                     code_font: str = DEFAULT_CODE_FONT, bullet_preset: str = ""):
+def _insert_markdown(doc_id: str, content: str, index: int = 1,
+                     tab_id: Optional[str] = None) -> Dict:
     """Insert markdown content into a doc at the given index, with full formatting.
 
     Uses mistune>=3.0.0 to parse markdown into an AST, then walks the AST
     to emit Google Docs batchUpdate requests.
 
+    Returns a result envelope (#423 — errors are no longer swallowed):
+      - success: ``{"status": "inserted", "batchesSent": N, "requestsSent": M}``
+      - failure: ``{"status": "insert_failed", "error": <message>,
+        "apiError": <google error>, "batchesCompleted": N}`` — batchesCompleted
+        counts batchUpdate calls that succeeded before the failure, so callers
+        can distinguish a partial write (truncation) from a total failure.
+    Every batchUpdate response is checked for a Google error envelope; any
+    429/400/500/quota error aborts the insert instead of silently continuing.
+
+    Supported constructs: see ``_insert_markdown_raising``.
+
+    Rendering has no knobs and emits structure only. Paragraph spacing, fonts
+    and sizes come from the named styles, which the house-style normalize pass
+    pins after every write tool (#2001; house_style.json, style_normalize.py).
+    """
+    stats = {"batches": 0, "requests": 0}
+    try:
+        _insert_markdown_raising(doc_id, content, index, tab_id, stats)
+    except auth.DocsApiError as e:
+        return {
+            "status": "insert_failed",
+            "error": str(e),
+            "apiError": e.envelope.get("error"),
+            "batchesCompleted": stats["batches"],
+        }
+    return {
+        "status": "inserted",
+        "batchesSent": stats["batches"],
+        "requestsSent": stats["requests"],
+    }
+
+
+def _insert_markdown_raising(doc_id: str, content: str, index: int, tab_id: Optional[str],
+                             stats: Dict) -> None:
+    """Emit and execute the batchUpdate requests for ``_insert_markdown``.
+
+    Raises ``auth.DocsApiError`` on the first Google error envelope; ``stats``
+    accumulates successfully executed batches/requests so the caller can report
+    partial progress.
+
     Supported constructs:
       - ATX headings (#–######)
       - Paragraphs with **bold**, *italic*, `inline code`, [text](url)
-      - Unordered lists (- item, * item) — createParagraphBullets BULLET_DISC_CIRCLE_SQUARE
+      - Unordered lists (- item, * item) — createParagraphBullets config.BULLET_PRESET
       - Ordered lists (1. item) — createParagraphBullets NUMBERED_DECIMAL_ALPHA_ROMAN
-      - Fenced code blocks (```) — code_font font (default: Courier New)
-      - Blockquotes (> text) — rendered as italic paragraph (Docs has no native blockquote)
+      - Fenced code blocks (```) — Courier New paragraphs (config.CODE_FONT)
+      - Blockquotes (> text) — italic, indented, with a left rule
       - Horizontal rules (---) — rendered as a line of ─ characters
       - Tables — real Docs tables via two-phase insertTable + cell insertText (reverse order)
-
-    Args:
-        code_font: Font family for code blocks and inline code. Defaults to "Courier New".
-        bullet_preset: Docs API bulletPreset for unordered lists (#170). Empty string =
-            BULLET_DISC_CIRCLE_SQUARE (today's default). Validated by callers (write_to_tab).
     """
     import mistune
 
@@ -64,6 +100,39 @@ def _insert_markdown(doc_id: str, content: str, index: int = 1, tab_id: Optional
             return tab.get("documentTab", {}).get("body", {}).get("content", []) if tab else []
         return resp.get("body", {}).get("content", [])
 
+    def _text_width_pt(resp: Dict) -> float:
+        """Usable text width of the destination, in points (#1770).
+
+        pageSize.width - marginLeft - marginRight, read from the destination's own
+        documentStyle so a non-Letter page or non-1" margins produce a table that
+        still spans exactly the text column. A tab carries its own
+        documentTab.documentStyle; the doc body uses the top-level one. Any
+        destination that reports no usable documentStyle falls back to
+        config.FALLBACK_TEXT_WIDTH_PT (Letter, 1" margins).
+        """
+        style: Dict = {}
+        if tab_id:
+            tab = tabs._find_tab_by_id(resp.get("tabs", []), tab_id)
+            if tab:
+                style = tab.get("documentTab", {}).get("documentStyle", {}) or {}
+        if not style:
+            style = resp.get("documentStyle", {}) or {}
+
+        def _mag(d: Any) -> Optional[float]:
+            if isinstance(d, dict) and isinstance(d.get("magnitude"), (int, float)):
+                return float(d["magnitude"])
+            return None
+
+        page = _mag((style.get("pageSize") or {}).get("width"))
+        left = _mag(style.get("marginLeft"))
+        right = _mag(style.get("marginRight"))
+        if page is None or left is None or right is None:
+            return float(config.FALLBACK_TEXT_WIDTH_PT)
+        width = page - left - right
+        # A pathological style (margins wider than the page) would yield a
+        # zero/negative width that the API rejects; keep the house default.
+        return width if width > 0 else float(config.FALLBACK_TEXT_WIDTH_PT)
+
     def _live_append_index(fallback: int) -> int:
         """Clamp a tab append to the live valid insertion point.
 
@@ -74,7 +143,9 @@ def _insert_markdown(doc_id: str, content: str, index: int = 1, tab_id: Optional
         """
         if not tab_id:
             return fallback
-        doc = auth.api("GET", f"https://docs.googleapis.com/v1/documents/{doc_id}?includeTabsContent=true")
+        doc = auth.raise_for_error(
+            auth.api("GET", f"https://docs.googleapis.com/v1/documents/{doc_id}?includeTabsContent=true")
+        )
         body_content = _body_content_from_doc(doc)
         if not body_content:
             return fallback
@@ -89,50 +160,69 @@ def _insert_markdown(doc_id: str, content: str, index: int = 1, tab_id: Optional
         if tab_id and current_index > index and not requests:
             current_index = _live_append_index(current_index)
 
+    def _run_batch(batch: List[Dict]) -> None:
+        """Execute one batchUpdate and raise on a Google error envelope (#423).
+
+        Responses were previously discarded here, which turned partial batch
+        failures into silent truncation and total failures into silent empty
+        tabs. Successful batches are counted in ``stats`` so a mid-flight
+        failure can be reported as partial.
+        """
+        resp = auth.api(
+            "POST",
+            f"https://docs.googleapis.com/v1/documents/{doc_id}:batchUpdate",
+            {"requests": batch},
+        )
+        auth.raise_for_error(resp)
+        stats["batches"] += 1
+        stats["requests"] += len(batch)
+
     def flush_requests() -> bool:
         nonlocal requests
         if not requests:
             return False
         for i in range(0, len(requests), 50):
-            batch = requests[i:i + 50]
-            auth.api(
-                "POST",
-                f"https://docs.googleapis.com/v1/documents/{doc_id}:batchUpdate",
-                {"requests": batch},
-            )
+            _run_batch(requests[i:i + 50])
         requests = []
         return True
 
     def paragraph_format_requests(rng: Dict, named_style: Optional[str]) -> List[Dict]:
         """Build the paragraph-level requests shared by every non-list paragraph.
 
-        Two concerns, both #301:
-          - updateParagraphStyle sets the named style AND a small spaceBelow, so
-            multi-paragraph prose renders with visible gaps instead of a smashed
-            wall (bug 2). Blank markdown lines are dropped, so this is the only
-            source of inter-paragraph spacing.
-          - deleteParagraphBullets clears any list bullet the paragraph inherited
-            from the tab's anchor paragraph (bug 1). Splitting a still-bulleted
-            anchor paragraph makes every inserted paragraph inherit its bullet;
-            this is a no-op when there is no bullet. It is the mirror of the #171
-            list-branch NORMAL_TEXT reset (headings/paragraphs inheriting a bullet
-            vs. list items inheriting a heading style).
+        - updateParagraphStyle sets the named style ONLY. Spacing, fonts and
+          sizes come from the named styles, which the house-style normalize pass
+          pins per tab after every write (#2001, style_normalize.py).
+        - deleteParagraphBullets clears any list bullet the paragraph inherited
+          from the tab's anchor paragraph (#301 bug 1). It is the mirror of the
+          #171 list-branch NORMAL_TEXT reset.
         """
-        paragraph_style: Dict[str, Any] = {"spaceBelow": {"magnitude": PARAGRAPH_SPACE_BELOW_PT, "unit": "PT"}}
-        fields = ["spaceBelow"]
+        paragraph_style: Dict[str, Any] = {}
+        fields: List[str] = []
         if named_style:
             paragraph_style["namedStyleType"] = named_style
-            fields.insert(0, "namedStyleType")
-        return [
-            {
+            fields.append("namedStyleType")
+        reqs: List[Dict] = []
+        if fields:
+            reqs.append({
                 "updateParagraphStyle": {
                     "range": rng,
                     "paragraphStyle": paragraph_style,
                     "fields": ",".join(fields),
                 }
-            },
-            {"deleteParagraphBullets": {"range": rng}},
-        ]
+            })
+        reqs.append({"deleteParagraphBullets": {"range": rng}})
+        return reqs
+
+    def emit_blank_paragraph() -> None:
+        """One empty NORMAL_TEXT paragraph — how hand-written docs chunk blocks (#1764)."""
+        nonlocal current_index
+        sync_to_live_append_index()
+        location = _mk_location(current_index, tab_id)
+        requests.append({"insertText": {"location": location, "text": "\n"}})
+        end_idx = current_index + 1
+        rng = _mk_range(current_index, end_idx, tab_id)
+        requests.extend(paragraph_format_requests(rng, "NORMAL_TEXT"))
+        current_index = end_idx
 
     def emit_text_paragraph(text: str, inline_requests: List[Dict],
                             named_style: Optional[str] = None) -> int:
@@ -177,7 +267,7 @@ def _insert_markdown(doc_id: str, content: str, index: int = 1, tab_id: Optional
                     }
                 })
                 inline_requests.extend(
-                    _walk_inlines(segment, segment_start, tab_id, code_font=code_font)
+                    _walk_inlines(segment, segment_start, tab_id)
                 )
                 current_index += _utf16_len(text)
             segment = []
@@ -208,57 +298,214 @@ def _insert_markdown(doc_id: str, content: str, index: int = 1, tab_id: Optional
         requests.extend(inline_requests)
         return current_index
 
-    def list_item_inline_children(item: Dict[str, Any]) -> List[Dict[str, Any]]:
-        for child in item.get("children", []):
-            if child.get("type") in ("block_text", "paragraph"):
-                return child.get("children", [])
-        return []
+    def list_item_line_children(item: Dict[str, Any]) -> List[List[Dict[str, Any]]]:
+        """Inline children of EVERY paragraph in a list item, in document order.
 
-    def emit_list_lines(list_token: Dict[str, Any], depth: int = 0) -> None:
-        """Insert all list item lines, preserving nested items with leading tabs."""
+        A tight item holds a single ``block_text``; a loose (multi-paragraph)
+        item holds one ``paragraph`` per block. Only the first was rendered
+        before (#528), so everything after the blank line vanished silently.
+        """
+        return [
+            child.get("children", [])
+            for child in item.get("children", [])
+            if child.get("type") in ("block_text", "paragraph")
+        ]
+
+    def normal_text_reset(start: int, end: int) -> Dict[str, Any]:
+        """Set a just-inserted list line to NORMAL_TEXT (#171) BEFORE its inline styles.
+
+        Applying a namedStyleType resets the paragraph's text runs, even when the
+        type is unchanged, so a reset issued after the inline styles wiped **bold**
+        and `code` from every list item (found live, #2001). Pre-consumption
+        range: it runs before createParagraphBullets deletes the nesting tabs.
+        """
+        return {"updateParagraphStyle": {
+            "range": _mk_range(start, end, tab_id),
+            "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
+            "fields": "namedStyleType",
+        }}
+
+    def emit_list_line(children: List[Dict[str, Any]], prefix: str) -> None:
+        """Insert one list paragraph: nesting prefix + inline content + newline.
+
+        Lines with no image take the flat path — one insertText for the whole
+        line. Lines containing an inline image take the segmented path (the
+        mirror of ``emit_rich_paragraph``): text runs go in as text, image
+        tokens as insertInlineImage. Flattening an image token yields "", so
+        the flat path silently dropped the image and, for an image-only item,
+        the whole line (#528).
+        """
+        nonlocal current_index, requests
+        prefix_len = _utf16_len(prefix)
+        line_begin = current_index
+
+        if not _children_contain_image(children):
+            insert_text = prefix + _plain_text_from_children(children) + "\n"
+            line_start = current_index
+            requests.append({
+                "insertText": {
+                    "location": _mk_location(line_start, tab_id),
+                    "text": insert_text,
+                }
+            })
+            requests.append(normal_text_reset(line_start, line_start + _utf16_len(insert_text)))
+            requests.extend(
+                _walk_inlines(children, line_start + prefix_len, tab_id)
+            )
+            current_index += _utf16_len(insert_text)
+            return
+
+        inline_requests: List[Dict] = []
+        segment: List[Dict[str, Any]] = []
+        pending = prefix  # nesting tabs ride along with the first text insert
+
+        def flush_segment() -> None:
+            nonlocal current_index, segment, pending
+            text = pending + _plain_text_from_children(segment)
+            if text:
+                segment_start = current_index
+                requests.append({
+                    "insertText": {
+                        "location": _mk_location(segment_start, tab_id),
+                        "text": text,
+                    }
+                })
+                inline_requests.extend(
+                    _walk_inlines(
+                        segment,
+                        segment_start + _utf16_len(pending),
+                        tab_id,
+                    )
+                )
+                current_index += _utf16_len(text)
+            segment = []
+            pending = ""
+
+        for child in children:
+            if _is_image_token(child):
+                flush_segment()
+                requests.append({
+                    "insertInlineImage": {
+                        "location": _mk_location(current_index, tab_id),
+                        "uri": _image_url(child),
+                    }
+                })
+                current_index += 1
+            else:
+                segment.append(child)
+        flush_segment()
+
+        requests.append({
+            "insertText": {
+                "location": _mk_location(current_index, tab_id),
+                "text": "\n",
+            }
+        })
+        current_index += 1
+        requests.append(normal_text_reset(line_begin, current_index))
+        requests.extend(inline_requests)
+
+    def emit_list_lines(list_token: Dict[str, Any], depth: int = 0,
+                        tabs_before: int = 0) -> Tuple[int, List[Dict]]:
+        """Insert all list item lines, preserving nested items with leading tabs.
+
+        Returns ``(tabs_consumed, continuation_requests)``:
+
+        - ``tabs_consumed`` is the running total UTF-16 length of leading
+          nesting tabs inserted for the whole list, including ``tabs_before``.
+          createParagraphBullets converts those tabs into bullet nesting levels
+          and DELETES the characters, so the caller must shrink its virtual
+          index accounting by this amount once bullets are applied (#298) —
+          otherwise every later index in the batch is too high by the tab count
+          and the write fails with "Index N must be less than the end index of
+          the referenced segment".
+        - ``continuation_requests`` are the fix-ups for the 2nd+ paragraph of a
+          loose list item (#528). Those paragraphs are inserted as ordinary
+          lines so their text survives, then un-bulleted and indented to the
+          item's text column, so they read as continuations rather than as new
+          bullets (which would also renumber an ordered list). They target
+          post-consumption indexes and MUST be emitted after
+          createParagraphBullets.
+        """
         nonlocal current_index, requests
         sync_to_live_append_index()
         prefix = "\t" * depth
         prefix_len = _utf16_len(prefix)
+        indent = {"magnitude": LIST_INDENT_PER_LEVEL_PT * (depth + 1), "unit": "PT"}
+        consumed = tabs_before
+        continuation_requests: List[Dict] = []
+
         for item in list_token.get("children", []):
-            children = list_item_inline_children(item)
-            text = _plain_text_from_children(children)
-            if text:
-                insert_text = prefix + text + "\n"
-                item_start = current_index
-                requests.append({
-                    "insertText": {
-                        "location": _mk_location(item_start, tab_id),
-                        "text": insert_text,
-                    }
-                })
-                requests.extend(
-                    _walk_inlines(
-                        children,
-                        item_start + prefix_len,
-                        tab_id,
-                        code_font=code_font,
-                    )
-                )
-                current_index += _utf16_len(insert_text)
+            # `or [[]]`: an item with no paragraph at all (a bare "-") still gets a
+            # line. Emitting nothing dropped the bullet entirely and renumbered
+            # every following item of an ordered list (#528).
+            for position, children in enumerate(list_item_line_children(item) or [[]]):
+                tabs_before_line = consumed
+                line_start = current_index
+                emit_list_line(children, prefix)
+                line_end = current_index
+                consumed += prefix_len
+                if position:
+                    rng = _mk_range(line_start - tabs_before_line, line_end - consumed, tab_id)
+                    continuation_requests.extend([
+                        {"deleteParagraphBullets": {"range": rng}},
+                        {
+                            "updateParagraphStyle": {
+                                "range": rng,
+                                "paragraphStyle": {
+                                    "indentStart": indent,
+                                    "indentFirstLine": indent,
+                                },
+                                "fields": "indentStart,indentFirstLine",
+                            }
+                        },
+                    ])
             for child in item.get("children", []):
                 if child.get("type") == "list":
-                    emit_list_lines(child, depth + 1)
+                    consumed, nested = emit_list_lines(child, depth + 1, consumed)
+                    continuation_requests.extend(nested)
+        return consumed, continuation_requests
 
-    for token in tokens:
+    def next_block_type(pos: int) -> str:
+        """Type of the next non-blank token after ``pos``, or "" at the end."""
+        for later in tokens[pos + 1:]:
+            if later.get("type") != "blank_line":
+                return later.get("type", "")
+        return ""
+
+    previous_was_blank = True  # suppress a leading blank at the insertion point
+    previous_block = ""
+    for token_pos, token in enumerate(tokens):
         t = token.get("type", "")
 
         if t == "blank_line":
+            # Preserve the author's chunking between prose blocks as one empty
+            # paragraph per run (#1764). Never next to a heading: the heading's own
+            # space-above separates sections in the house style (#2001). Never
+            # before a table: insertTable creates its own empty paragraph above the
+            # grid (PAIN-004).
+            upcoming = next_block_type(token_pos)
+            if (not previous_was_blank and previous_block != "heading"
+                    and upcoming not in ("table", "heading", "")):
+                emit_blank_paragraph()
+                previous_was_blank = True
             continue
+        # mistune folds the blank line that ends a list into the list token. A
+        # prose block can only follow a list after a blank line, so restore it.
+        if (previous_block == "list" and not previous_was_blank
+                and t not in ("heading", "table", "list")):
+            emit_blank_paragraph()
+        previous_was_blank = False
+        previous_block = t
 
-        elif t == "heading":
+        if t == "heading":
             level = token["attrs"]["level"]
             children = token.get("children", [])
             if _children_contain_image(children):
                 current_index = emit_rich_paragraph(children, f"HEADING_{level}")
             else:
                 text = _plain_text_from_children(children)
-                inline_reqs = _walk_inlines(children, current_index, tab_id, code_font=code_font)
+                inline_reqs = _walk_inlines(children, current_index, tab_id)
                 current_index = emit_text_paragraph(text, inline_reqs, f"HEADING_{level}")
 
         elif t == "paragraph":
@@ -267,19 +514,38 @@ def _insert_markdown(doc_id: str, content: str, index: int = 1, tab_id: Optional
                 current_index = emit_rich_paragraph(children, "NORMAL_TEXT")
             else:
                 text = _plain_text_from_children(children)
-                inline_reqs = _walk_inlines(children, current_index, tab_id, code_font=code_font)
+                inline_reqs = _walk_inlines(children, current_index, tab_id)
                 current_index = emit_text_paragraph(text, inline_reqs, "NORMAL_TEXT")
 
         elif t == "block_quote":
-            # Render as italic paragraph — Docs has no native blockquote type
+            # Docs has no native blockquote type. The house shape is italic text,
+            # indented 36pt, with a left rule — otherwise a quote is byte-for-byte
+            # indistinguishable from body prose (#1768 PAIN-003).
             for child in token.get("children", []):
                 if child.get("type") == "paragraph":
                     text = _plain_text_from_children(child.get("children", []))
                     insert_text = text + "\n"
+                    sync_to_live_append_index()
                     location = _mk_location(current_index, tab_id)
                     requests.append({"insertText": {"location": location, "text": insert_text}})
                     end_idx = current_index + _utf16_len(insert_text)
                     rng = _mk_range(current_index, end_idx, tab_id)
+                    # Bullet clearing FIRST: deleteParagraphBullets resets the
+                    # paragraph's indentation, so running it after the style would
+                    # wipe the quote indent (observed live on #1768).
+                    requests.append({"deleteParagraphBullets": {"range": rng}})
+                    quote_style: Dict[str, Any] = {"namedStyleType": "NORMAL_TEXT"}
+                    indent = {"magnitude": config.BLOCK_QUOTE_INDENT_PT, "unit": "PT"}
+                    quote_style["indentStart"] = indent
+                    quote_style["indentFirstLine"] = indent
+                    quote_style["borderLeft"] = config.BLOCK_QUOTE_BORDER
+                    requests.append({
+                        "updateParagraphStyle": {
+                            "range": rng,
+                            "paragraphStyle": quote_style,
+                            "fields": "namedStyleType,indentStart,indentFirstLine,borderLeft",
+                        }
+                    })
                     requests.append({
                         "updateTextStyle": {
                             "range": rng,
@@ -290,17 +556,33 @@ def _insert_markdown(doc_id: str, content: str, index: int = 1, tab_id: Optional
                     current_index = end_idx
 
         elif t == "block_code":
-            # Fenced or indented code block — insert raw text with code_font
+            # Fenced or indented code block. Docs exposes no code-block construct
+            # over batchUpdate, so the reproducible shape is a monospace paragraph
+            # run in config.CODE_FONT. No shading and no pinned size: the corpus
+            # has zero non-empty paragraph shading, and the 9pt from the retired
+            # 9pt code was refuted: 3 supporting runs against 104 with size absent.
             code_text = token.get("raw", "").rstrip("\n")
             insert_text = code_text + "\n"
+            sync_to_live_append_index()
             location = _mk_location(current_index, tab_id)
             requests.append({"insertText": {"location": location, "text": insert_text}})
             end_idx = current_index + _utf16_len(insert_text)
             rng = _mk_range(current_index, end_idx, tab_id)
+            # Paragraph style FIRST: applying namedStyleType after the text style
+            # resets the run to the named style's font and drops the monospace
+            # override (observed live on #1764).
+            requests.append({
+                "updateParagraphStyle": {
+                    "range": rng,
+                    "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
+                    "fields": "namedStyleType",
+                }
+            })
+            requests.append({"deleteParagraphBullets": {"range": rng}})
             requests.append({
                 "updateTextStyle": {
                     "range": rng,
-                    "textStyle": {"weightedFontFamily": {"fontFamily": code_font}},
+                    "textStyle": {"weightedFontFamily": {"fontFamily": CODE_FONT}},
                     "fields": "weightedFontFamily",
                 }
             })
@@ -310,44 +592,46 @@ def _insert_markdown(doc_id: str, content: str, index: int = 1, tab_id: Optional
             # Render as a line of Unicode box-drawing horizontal chars
             hr_text = "─" * 40
             insert_text = hr_text + "\n"
+            sync_to_live_append_index()
             location = _mk_location(current_index, tab_id)
             requests.append({"insertText": {"location": location, "text": insert_text}})
-            current_index += _utf16_len(insert_text)
+            end_idx = current_index + _utf16_len(insert_text)
+            requests.extend(paragraph_format_requests(_mk_range(current_index, end_idx, tab_id), "NORMAL_TEXT"))
+            current_index = end_idx
 
         elif t == "list":
             ordered = token.get("attrs", {}).get("ordered", False)
-            # Ordered lists always use the numbered preset. Unordered lists honor
-            # the caller's bullet_preset override (#170), defaulting to the disc.
-            if ordered:
-                preset = "NUMBERED_DECIMAL_ALPHA_ROMAN"
-            else:
-                preset = bullet_preset or "BULLET_DISC_CIRCLE_SQUARE"
+            glyph_preset = (config.ORDERED_BULLET_PRESET if ordered
+                            else config.BULLET_PRESET)
             list_start = current_index
 
             # Insert all list item lines first, then add bullets in one request. Nested
             # list items use leading tabs, which Docs consumes as bullet nesting levels.
-            emit_list_lines(token)
+            tabs_consumed, continuation_requests = emit_list_lines(token)
 
             list_end = current_index
             rng = _mk_range(list_start, list_end, tab_id)
             requests.append({
                 "createParagraphBullets": {
                     "range": rng,
-                    "bulletPreset": preset,
+                    "bulletPreset": glyph_preset,
                 }
             })
-            # #171: explicitly reset list paragraphs to NORMAL_TEXT. Otherwise,
-            # when the cursor follows a HEADING_N paragraph, the inserted list
-            # items inherit that heading style — createParagraphBullets only
-            # changes the bullet glyph, not namedStyleType. The "namedStyleType"
-            # field mask means this does NOT strip the bullets we just applied.
-            requests.append({
-                "updateParagraphStyle": {
-                    "range": rng,
-                    "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
-                    "fields": "namedStyleType",
-                }
-            })
+            # createParagraphBullets DELETES the leading nesting tabs it just
+            # consumed, shrinking the segment by tabs_consumed (#298). Every
+            # request after this point — including the NORMAL_TEXT reset below —
+            # must use post-consumption indexes, or a nested list makes the rest
+            # of the batch fail with "Index N must be less than the end index of
+            # the referenced segment". (Flat lists: tabs_consumed == 0, no-op.)
+            list_end -= tabs_consumed
+            current_index = list_end
+            # #171 (list items must not inherit a preceding heading's style) is
+            # handled per line in emit_list_line, before the inline styles — a
+            # list-wide reset here would wipe them (#2001).
+            # Loose-item continuation paragraphs (#528): un-bullet them and put
+            # them back under the item's text column. They carry post-consumption
+            # ranges, so they can only run after createParagraphBullets above.
+            requests.extend(continuation_requests)
 
         elif t == "table":
             # Two-phase real Docs table insertion.
@@ -389,27 +673,21 @@ def _insert_markdown(doc_id: str, content: str, index: int = 1, tab_id: Optional
             # the doc body has more than one table.
             table_insert_index = current_index
             table_location = _mk_location(table_insert_index, tab_id)
-            auth.api(
-                "POST",
-                f"https://docs.googleapis.com/v1/documents/{doc_id}:batchUpdate",
+            _run_batch([
                 {
-                    "requests": [
-                        {
-                            "insertTable": {
-                                "rows": num_rows,
-                                "columns": num_cols,
-                                "location": table_location,
-                            }
-                        }
-                    ]
-                },
-            )
+                    "insertTable": {
+                        "rows": num_rows,
+                        "columns": num_cols,
+                        "location": table_location,
+                    }
+                }
+            ])
 
             # Phase 2: Discover cell start indices from the live document.
             get_url = f"https://docs.googleapis.com/v1/documents/{doc_id}"
             if tab_id:
                 get_url += "?includeTabsContent=true"
-            doc_resp = auth.api("GET", get_url)
+            doc_resp = auth.raise_for_error(auth.api("GET", get_url))
 
             # Find the table element in the document body (or tab body if tab_id).
             # Route the tab lookup through the recursive walker so nested sub-tabs
@@ -432,6 +710,10 @@ def _insert_markdown(doc_id: str, content: str, index: int = 1, tab_id: Optional
                 continue  # Can't discover indices; skip cell fill.
 
             table_element = matched_elem["table"]
+
+            # insertTable also creates an empty paragraph immediately before the
+            # grid. The normalize pass handles it (#2001): it inherits the pinned
+            # NORMAL_TEXT style, and under a heading the heading merges onto it.
 
             # Extract (row_idx, col_idx, cell_start_index, text, children) for all cells.
             cell_data: List[tuple] = []  # (row_idx, col_idx, start_index, text, children)
@@ -456,6 +738,7 @@ def _insert_markdown(doc_id: str, content: str, index: int = 1, tab_id: Optional
             cell_requests: List[Dict] = []
             inserted_chars = 0
             for row_idx, col_idx, cell_start, cell_text, cell_children in cell_data_sorted:
+                # Cell paragraphs inherit the pinned NORMAL_TEXT style (#2001).
                 if cell_text:
                     location = _mk_location(cell_start, tab_id)
                     cell_requests.append({"insertText": {"location": location, "text": cell_text}})
@@ -472,17 +755,72 @@ def _insert_markdown(doc_id: str, content: str, index: int = 1, tab_id: Optional
                     # Emit inline styling (bold, italic, code, links) for formatted
                     # markdown substrings within the cell, targeting only the
                     # formatted span — NOT the whole cell.
-                    inline_reqs = _walk_inlines(cell_children, cell_start, tab_id, code_font=code_font)
+                    inline_reqs = _walk_inlines(cell_children, cell_start, tab_id)
                     cell_requests.extend(inline_reqs)
 
+            if table_rows:
+                table_start = _mk_location(matched_elem["startIndex"], tab_id)
+
+                # Every cell is vertically centred, not just the header (#1770).
+                # A header-only MIDDLE left body cells top-aligned, which reads as
+                # a rendering bug in any row whose cells differ in height.
+                cell_requests.append({
+                    "updateTableCellStyle": {
+                        "tableRange": {
+                            "tableCellLocation": {
+                                "tableStartLocation": table_start,
+                                "rowIndex": 0,
+                                "columnIndex": 0,
+                            },
+                            "rowSpan": len(table_rows),
+                            "columnSpan": num_cols,
+                        },
+                        "tableCellStyle": {
+                            "contentAlignment": config.TABLE_CELL_CONTENT_ALIGNMENT,
+                        },
+                        "fields": "contentAlignment",
+                    }
+                })
+
+                # Grey tint on the header row sits on top of the whole-table
+                # alignment: 48/48 tables in Randy's own corpus (#1768).
+                cell_requests.append({
+                    "updateTableCellStyle": {
+                        "tableRange": {
+                            "tableCellLocation": {
+                                "tableStartLocation": table_start,
+                                "rowIndex": 0,
+                                "columnIndex": 0,
+                            },
+                            "rowSpan": 1,
+                            "columnSpan": num_cols,
+                        },
+                        "tableCellStyle": {
+                            "backgroundColor": {"color": {"rgbColor": config.TABLE_HEADER_TINT_RGB}},
+                        },
+                        "fields": "backgroundColor",
+                    }
+                })
+
+                # Columns span the destination's full text width, split evenly
+                # (#1770). insertTable's own widths shrink with column count, so a
+                # 2-column table used to occupy half the page next to a 5-column
+                # one; and the pre-#1769 175pt hard-code overflowed at 3 columns.
+                col_width = _text_width_pt(doc_resp) / num_cols
+                cell_requests.append({
+                    "updateTableColumnProperties": {
+                        "tableStartLocation": table_start,
+                        "columnIndices": list(range(num_cols)),
+                        "tableColumnProperties": {
+                            "widthType": "FIXED_WIDTH",
+                            "width": {"magnitude": col_width, "unit": "PT"},
+                        },
+                        "fields": "widthType,width",
+                    }
+                })
             if cell_requests:
                 for i in range(0, len(cell_requests), 50):
-                    batch = cell_requests[i:i + 50]
-                    auth.api(
-                        "POST",
-                        f"https://docs.googleapis.com/v1/documents/{doc_id}:batchUpdate",
-                        {"requests": batch},
-                    )
+                    _run_batch(cell_requests[i:i + 50])
 
             # Advance current_index past the table. matched_elem.endIndex is
             # the table's end BEFORE cell text was inserted; cell fills pushed

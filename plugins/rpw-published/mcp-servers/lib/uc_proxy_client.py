@@ -22,10 +22,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+import time
 from typing import Any
 from urllib.parse import quote, urlparse
 
 from databricks.sdk.service.serving import ExternalFunctionRequestHttpMethod
+
+from lib.errors import looks_like_keyring_race
 
 _MAX_BODY_CHARS = 2000
 _UC_OAUTH_FAILURE_MARKERS = (
@@ -39,9 +43,44 @@ _UC_OAUTH_FAILURE_MARKERS = (
 )
 
 # Module-level cache. Each MCP server runs as its own process, so this is
-# effectively per-server. The test-hook reset is here so server tests don't
-# have to import private state.
+# effectively per-server: the WorkspaceClient — and the OAuth token source the
+# SDK hangs off its Config — is resolved once and reused for the server's
+# lifetime rather than rebuilt per call. The test-hook reset is here so server
+# tests don't have to import private state.
 _workspace_client: Any | None = None
+
+# Serialization + retry around the macOS keyring token-cache race (#428).
+#
+# The Databricks SDK refreshes OAuth tokens lazily inside the request path; on
+# macOS that refresh writes the token cache through the keychain, and two
+# concurrent refreshes (parallel tool calls in one server session) collide as
+# "forced token refresh: cache update: exit status 45". `_call_lock` guards that
+# refresh so at most one runs per process at a time; the bounded retry below
+# covers races with *other* processes (e.g. a second MCP server refreshing the
+# same profile).
+#
+# The lock covers the REFRESH ONLY, not the upstream HTTP call. Holding it across
+# the request serialized every tool call in a server, so one slow call (a Glean
+# assistant answer, a broad Slack search — tens of seconds each) starved every
+# other call behind it. Queued calls then burned their whole client-side budget
+# waiting and failed having never issued a request. `config.authenticate()` is
+# the racing step and is sub-millisecond when the token is still valid, so the
+# lock is now held for microseconds instead of the length of the request.
+_client_lock = threading.Lock()
+_call_lock = threading.Lock()
+
+_KEYRING_RETRY_ATTEMPTS = 3
+_KEYRING_RETRY_BASE_DELAY = 0.25  # seconds; grows linearly per attempt
+
+# Ceiling on waiting for the refresh lock. Reaching it means another thread is
+# wedged inside a token refresh; failing fast with an actionable envelope beats
+# blocking until the MCP client's own timeout kills the call with no explanation.
+_LOCK_ACQUIRE_TIMEOUT_SECONDS = 30.0
+
+# Ceiling on the upstream request itself. The SDK defaults to no timeout, so a
+# hung proxy or upstream would block a server thread until the client gave up.
+# Generous enough for slow upstream searches, but bounded to surface a hang.
+_DEFAULT_HTTP_TIMEOUT_SECONDS = 150.0
 
 
 def require_proxy_env() -> tuple[str, str]:
@@ -66,12 +105,74 @@ def reset_workspace_client() -> None:
 
 
 def get_workspace_client(profile: str) -> Any:
-    """Return a cached WorkspaceClient bound to `profile`, constructing on first use."""
+    """Return a cached WorkspaceClient bound to `profile`, constructing on first use.
+
+    Construction is serialized: the first build resolves the profile's OAuth
+    token (a keychain access on macOS), and two threads racing it would hit the
+    same keyring contention the per-call lock exists to prevent (#428).
+
+    The client carries an explicit `http_timeout_seconds`; the SDK's own default
+    is unbounded, which lets a hung upstream pin a server thread indefinitely.
+    """
     global _workspace_client
-    if _workspace_client is None:
-        from databricks.sdk import WorkspaceClient  # lazy import for test isolation
-        _workspace_client = WorkspaceClient(profile=profile)
-    return _workspace_client
+    with _client_lock:
+        if _workspace_client is None:
+            from databricks.sdk import WorkspaceClient  # lazy import for test isolation
+
+            try:
+                from databricks.sdk.core import Config
+
+                _workspace_client = WorkspaceClient(
+                    config=Config(
+                        profile=profile,
+                        http_timeout_seconds=_DEFAULT_HTTP_TIMEOUT_SECONDS,
+                    )
+                )
+            except Exception:
+                # The timeout is a defensive bound, not a correctness
+                # requirement, so it must never be the reason a server fails to
+                # build a client — an SDK without `Config`, or a patched
+                # WorkspaceClient under test, falls back to plain construction.
+                # A genuinely bad profile still raises, from the same call that
+                # raised before this bound existed.
+                _workspace_client = WorkspaceClient(profile=profile)
+        return _workspace_client
+
+
+def _refresh_auth_locked(workspace_client: Any) -> None:
+    """Force the SDK's lazy OAuth refresh while holding `_call_lock`.
+
+    This is the step that races on the macOS keychain (#428). Doing it here,
+    under the lock, means the refresh is still serialized while the upstream
+    request that follows is not. Raises so the caller's keyring-race retry and
+    OAuth-reauth handling see the failure exactly as they did when the refresh
+    happened implicitly inside the request.
+
+    A client without a usable `config.authenticate` (older SDK, or a test
+    double) is left alone: the refresh then happens inside the request as
+    before, which is correct, just not de-raced.
+    """
+    config = getattr(workspace_client, "config", None)
+    authenticate = getattr(config, "authenticate", None)
+    if callable(authenticate):
+        authenticate()
+
+
+def _busy_envelope() -> str:
+    """Returned when the refresh lock could not be acquired in time."""
+    return json.dumps(
+        {
+            "ok": False,
+            "error": "auth_refresh_busy",
+            "detail": (
+                "Timed out waiting for the OAuth refresh lock after "
+                f"{_LOCK_ACQUIRE_TIMEOUT_SECONDS:.0f}s; another call in this "
+                "server is stuck refreshing credentials. Retry, or reconnect "
+                "the server if it persists."
+            ),
+            "retryable": True,
+        }
+    )
 
 
 _DEFAULT_HEADERS = {
@@ -186,16 +287,46 @@ def request(
     treat_empty_as_error: if True, empty response body returns
       {"ok": false, "error": "empty_response"} instead of {"ok": true, "data": null}.
       Useful for APIs (like Slack) where empty 200s indicate a proxy/upstream bug.
+
+    The OAuth refresh is serialized per-process (`_call_lock`) and retried a
+    bounded number of times when the failure matches the macOS keyring
+    token-cache race ("... cache update: exit status 45"), so a transient
+    refresh collision costs a sub-second retry instead of a failed tool call
+    (#428). The upstream request runs OUTSIDE that lock, so a slow call no
+    longer blocks every other call in the same server.
     """
-    try:
-        resp = workspace_client.serving_endpoints.http_request(
-            conn=conn,
-            method=method,
-            path=path.lstrip("/"),
-            headers=headers if headers is not None else _DEFAULT_HEADERS,
-            json=json_body,
-            params=query_params,
-        )
+    for attempt in range(1, _KEYRING_RETRY_ATTEMPTS + 1):
+        try:
+            if not _call_lock.acquire(timeout=_LOCK_ACQUIRE_TIMEOUT_SECONDS):
+                return _busy_envelope()
+            try:
+                _refresh_auth_locked(workspace_client)
+            finally:
+                _call_lock.release()
+
+            resp = workspace_client.serving_endpoints.http_request(
+                conn=conn,
+                method=method,
+                path=path.lstrip("/"),
+                headers=headers if headers is not None else _DEFAULT_HEADERS,
+                json=json_body,
+                params=query_params,
+            )
+        except Exception as exc:
+            detail = str(exc)
+            if looks_like_keyring_race(detail) and attempt < _KEYRING_RETRY_ATTEMPTS:
+                time.sleep(_KEYRING_RETRY_BASE_DELAY * attempt)
+                continue
+            status_code = _status_code_from_detail(detail)
+            if _looks_like_uc_oauth_failure(status_code, detail):
+                return _uc_oauth_reauth_response(
+                    conn=conn,
+                    workspace_client=workspace_client,
+                    detail=detail,
+                    status_code=status_code,
+                )
+            return json.dumps({"ok": False, "error": str(exc)})
+
         if resp.status_code and resp.status_code >= 400:
             body = (resp.text or "")[:_MAX_BODY_CHARS]
             if _looks_like_uc_oauth_failure(resp.status_code, body):
@@ -230,17 +361,10 @@ def request(
         if isinstance(data, dict):
             return json.dumps(data, ensure_ascii=False)
         return json.dumps({"ok": True, "data": data}, ensure_ascii=False)
-    except Exception as exc:
-        detail = str(exc)
-        status_code = _status_code_from_detail(detail)
-        if _looks_like_uc_oauth_failure(status_code, detail):
-            return _uc_oauth_reauth_response(
-                conn=conn,
-                workspace_client=workspace_client,
-                detail=detail,
-                status_code=status_code,
-            )
-        return json.dumps({"ok": False, "error": str(exc)})
+
+    # Unreachable: every loop iteration returns or continues, and the final
+    # attempt always returns. Kept for type-checkers.
+    return json.dumps({"ok": False, "error": "retries_exhausted"})
 
 
 def request_via_env(
@@ -255,8 +379,11 @@ def request_via_env(
     """Env-driven proxy call: read UC_PROXY_* env, get cached client, call request().
 
     On missing env, returns the literal `missing_env` JSON envelope used by the
-    google MCP servers today — DO NOT change the envelope shape or `detail` string,
-    other tooling depends on these exact bytes.
+    google MCP servers today — DO NOT change the existing keys or `detail` string,
+    other tooling depends on these exact bytes. When the launcher degraded startup
+    (#428), an additional `startup_error` key carries the pre-flight failure so a
+    registered-but-degraded server returns the *root cause* per call instead of a
+    bare missing-env message.
 
     headers: forwarded to request(). If None, defaults to Accept/Content-Type.
     treat_empty_as_error: forwarded to request(). If True, empty body is an error.
@@ -264,13 +391,15 @@ def request_via_env(
     try:
         conn, profile = require_proxy_env()
     except RuntimeError:
-        return json.dumps(
-            {
-                "ok": False,
-                "error": "missing_env",
-                "detail": "UC_PROXY_CONNECTION_NAME and UC_PROXY_PROFILE must be set",
-            }
-        )
+        envelope: dict[str, Any] = {
+            "ok": False,
+            "error": "missing_env",
+            "detail": "UC_PROXY_CONNECTION_NAME and UC_PROXY_PROFILE must be set",
+        }
+        startup_error = (os.environ.get("MCP_STARTUP_ERROR") or "").strip()
+        if startup_error:
+            envelope["startup_error"] = startup_error
+        return json.dumps(envelope)
     return request(
         workspace_client=get_workspace_client(profile),
         conn=conn,

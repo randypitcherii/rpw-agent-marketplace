@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib import launcher
 
-REQUIRED = ["GDOCS_QUOTA_PROJECT", "GDOCS_TARGET_FOLDER_ID"]
+REQUIRED = ["GDOCS_QUOTA_PROJECT"]  # GDOCS_TARGET_FOLDER_ID is optional (no-folder mode)
 
 
 def main() -> None:

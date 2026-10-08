@@ -36,7 +36,7 @@ For LangChain/LangGraph code (the house default for Python agents), use `ChatDat
 from databricks_langchain import ChatDatabricks
 
 # endpoint = a Foundation Model API name or your own serving endpoint name
-llm = ChatDatabricks(endpoint="databricks-claude-sonnet-4")
+llm = ChatDatabricks(endpoint="databricks-claude-opus-5-5")
 llm.invoke("summarize this")
 ```
 
@@ -125,7 +125,7 @@ normal config), host-based default auth **cannot disambiguate** and crashes:
 
 ```
 ValueError: default auth: databricks-cli: cannot get access token:
-  Error: DEFAULT and ns-sp match https://<workspace>.cloud.databricks.com in ~/.databrickscfg.
+  Error: user-profile and service-principal match https://<workspace>.cloud.databricks.com in ~/.databrickscfg.
   Use --profile to specify which profile to use
 ```
 

@@ -33,6 +33,13 @@ class TestDriveGetFileShaping(unittest.TestCase):
             "UC_PROXY_PROFILE": "example-profile",
         }
         uc_proxy_client.reset_workspace_client()
+        # Patch Config too: get_workspace_client builds `WorkspaceClient(config=Config(
+        # profile=...))`, and a real Config resolves the profile — on a machine with
+        # ~/.databrickscfg that is a live OAuth/host-metadata round trip (~0.5s per
+        # test, 29 real HTTPS calls across this "fully mocked" suite). Nothing here
+        # exercises Config; the mock keeps it offline everywhere.
+        self._config_patcher = patch("databricks.sdk.core.Config")
+        self._config_patcher.start()
         self._patcher = patch("databricks.sdk.WorkspaceClient")
         self.mock_wc_class = self._patcher.start()
         self.http = MagicMock()
@@ -55,6 +62,7 @@ class TestDriveGetFileShaping(unittest.TestCase):
 
     def tearDown(self):
         self._patcher.stop()
+        self._config_patcher.stop()
         uc_proxy_client.reset_workspace_client()
 
     def _call(self, *args, **kwargs):

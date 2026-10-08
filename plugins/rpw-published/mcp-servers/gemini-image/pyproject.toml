@@ -1,6 +1,6 @@
 [project]
 name = "gemini-image"
-version = "0.1.0"
+version = "2026.08.0901"
 description = "MCP server for Gemini native image generation and editing"
 readme = "README.md"
 requires-python = ">=3.12"

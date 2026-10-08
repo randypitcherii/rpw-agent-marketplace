@@ -18,9 +18,11 @@ Layout (post-#318 restructure):
 
 import json
 
+import auth
 import policy
+import style_gate
+import style_lint
 from app import mcp
-from config import DEFAULT_CODE_FONT
 from docs_read import get_image_bytes, list_docs, read_doc
 from docs_write import (
     add_tab,
@@ -42,7 +44,8 @@ is_folder_allowed = policy.is_folder_allowed
 
 @mcp.tool
 def gdocs_list() -> str:
-    """List Google Docs in the target folder. Returns JSON with id, name, modifiedTime, webViewLink."""
+    """List Google Docs — the target folder when GDOCS_TARGET_FOLDER_ID is set, else your 50 most
+    recently modified Docs across Drive. Returns JSON with id, name, modifiedTime, webViewLink."""
     try:
         out = list_docs()
         return json.dumps({"files": out}, ensure_ascii=False)
@@ -56,6 +59,26 @@ def gdocs_read(doc_id: str) -> str:
     try:
         out = read_doc(doc_id)
         return json.dumps(out, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool
+def gdocs_lint(doc_id: str, tab_id: str = "") -> str:
+    """Check a doc against the house style (house_style.json) in code — no content read-back.
+
+    Use this after any Docs write instead of reading the doc to eyeball formatting.
+    tab_id: optional; omit to lint every tab (child tabs included).
+    Returns { ok, errors, warnings, checked, by_rule, violations[] }: violations are grouped by
+    (rule, expected, actual) with a count and at most two short location samples. ok is false only
+    on errors; warnings (e.g. non-dash bullet glyphs, which the API cannot create) never block.
+    """
+    try:
+        resp = auth.api("GET", f"https://docs.googleapis.com/v1/documents/{doc_id}?includeTabsContent=true")
+        if "error" in resp:
+            return json.dumps(resp)
+        out = style_lint.lint_document(resp, tab_id=tab_id or None)
+        return json.dumps({"documentId": doc_id, **out}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -77,14 +100,36 @@ def gdocs_get_image(doc_id: str, object_id: str) -> str:
 
 @mcp.tool
 def gdocs_create(title: str, content: str = "") -> str:
-    """Create a new doc in the target folder. content: optional markdown."""
+    """Create a new doc in the target folder. content: optional markdown.
+
+
+    Returns status "created" only when the doc was created, moved into
+    GDOCS_TARGET_FOLDER_ID (when one is configured — the folder is optional;
+    unset means the doc stays in the Drive root and no move is attempted),
+    and any content was fully inserted. Partial failures
+    are surfaced instead of silent success: "created_but_move_failed" (doc exists
+    but landed in the Drive root — moveError has the Drive error),
+    "created_but_content_failed" (doc created/moved but the markdown insert
+    failed; doc may be empty or partial), or "created_but_move_and_content_failed".
+    Those envelopes still include documentId/url since the doc exists.
+
+    House style (#2001): after a successful write the tab is normalized to
+    house_style.json and linted in code. The result carries a compact "style"
+    summary ({ok, errors, warnings, by_rule, samples, normalized}); if errors remain,
+    the status gets a "_but_style_check_failed" suffix and "error" is set. Do not
+    read the doc back to check formatting.
+    """
     err = policy.gate_write("create", "new")
     if err:
         return json.dumps({"error": err})
     try:
         out = create_doc(title, content or None)
-        if "error" not in out:
+        # Audit whenever a doc actually got created (documentId present) — partial
+        # failures like created_but_move_failed still created a real doc.
+        if out.get("documentId"):
             policy.append_audit("create", out.get("documentId", ""), f"title={title}")
+        if out.get("status") == "created":
+            out = style_gate.gate(out, out["documentId"])
         return json.dumps(out, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)})
@@ -92,7 +137,19 @@ def gdocs_create(title: str, content: str = "") -> str:
 
 @mcp.tool
 def gdocs_update(doc_id: str, content: str) -> str:
-    """Append markdown content to the end of a doc."""
+    """Append markdown content to the end of a doc.
+
+
+    Returns status "updated" only when every insert batch succeeded; on API
+    failure returns "update_failed" with the Google error (the append is
+    non-destructive, but content may be partially written).
+
+    House style (#2001): after a successful write the doc's first tab (where the append lands) is normalized to
+    house_style.json and linted in code. The result carries a compact "style"
+    summary ({ok, errors, warnings, by_rule, samples, normalized}); if errors remain,
+    the status gets a "_but_style_check_failed" suffix and "error" is set. Do not
+    read the doc back to check formatting.
+    """
     err = policy.gate_write("update", doc_id)
     if err:
         return json.dumps({"error": err})
@@ -100,6 +157,8 @@ def gdocs_update(doc_id: str, content: str) -> str:
         out = update_doc(doc_id, content)
         if "error" not in out:
             policy.append_audit("update", doc_id, "")
+        if out.get("status") == "updated":
+            out = style_gate.gate(out, doc_id)
         return json.dumps(out, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)})
@@ -128,7 +187,19 @@ def gdocs_add_tab(
     parent_tab_id: str = "",
     icon_emoji: str = "",
 ) -> str:
-    """Add a tab (or sub-tab) to a doc. parent_tab_id: optional for nesting. icon_emoji: optional emoji."""
+    """Add a tab (or sub-tab) to a doc. parent_tab_id: optional for nesting. icon_emoji: optional emoji.
+
+    Returns status "tab_added" only when the tab was created and any content was
+    fully inserted; if the content insert fails, returns
+    "tab_added_but_content_failed" (tab exists but may be empty or partially
+    written) with the Google API error.
+
+    House style (#2001): after a successful write the new tab is normalized to
+    house_style.json and linted in code. The result carries a compact "style"
+    summary ({ok, errors, warnings, by_rule, samples, normalized}); if errors remain,
+    the status gets a "_but_style_check_failed" suffix and "error" is set. Do not
+    read the doc back to check formatting.
+    """
     err = policy.gate_write("add_tab", doc_id)
     if err:
         return json.dumps({"error": err})
@@ -142,8 +213,12 @@ def gdocs_add_tab(
         )
         if parent_tab_id and policy.is_missing_target_error(out):
             return json.dumps({"status": "not_found", "documentId": doc_id, "parentTabId": parent_tab_id})
-        if "error" not in out:
+        # Audit whenever the tab itself was created — including the partial
+        # tab_added_but_content_failed case (the mutation happened).
+        if str(out.get("status", "")).startswith("tab_added"):
             policy.append_audit("add_tab", doc_id, f"tab={tab_name}")
+        if out.get("status") == "tab_added" and out.get("tabId"):
+            out = style_gate.gate(out, doc_id, out["tabId"])
         return json.dumps(out, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)})
@@ -159,7 +234,11 @@ def gdocs_find_replace(
     match_case: bool = False,
     tab_id: str = "",
 ) -> str:
-    """Replace all occurrences of find_text with replace_text. tab_id: optional to scope to one tab."""
+    """Replace all occurrences of find_text with replace_text. tab_id: optional to scope to one tab.
+
+    Not house-style gated: replaced text keeps the style of the text it replaces
+    (see style_gate.py). Run gdocs_lint afterwards if the tab's formatting matters.
+    """
     err = policy.gate_write("find_replace", doc_id)
     if err:
         return json.dumps({"error": err})
@@ -182,33 +261,41 @@ def gdocs_find_replace(
 
 @mcp.tool
 def gdocs_write_to_tab(doc_id: str, tab_id: str, content: str,
-                       code_font: str = "", bullet_preset: str = "",
                        allow_image_destruction: bool = False) -> str:
     """Replace a tab's content with rendered markdown (idempotent).
 
     The tab is cleared before inserting, so re-running with the same content yields the
     same document instead of a second prepended copy. Returns not_found if the tab does
-    not exist. code_font: optional font for code blocks and inline code (default: Courier New).
-    bullet_preset: optional Docs API bulletPreset applied to unordered lists, e.g.
-    BULLET_ARROW_DIAMOND_DISC (▸), BULLET_CHECKBOX (☐), BULLET_STAR_CIRCLE_SQUARE (★).
-    Empty = default disc bullet. An unknown value returns a structured error (the tab is
-    not modified). Ordered lists always use the numbered preset and ignore this.
+    not exist.
 
     Embedded images in the target tab are permanently destroyed by the clear+rebuild and
     cannot be re-anchored afterward (#311). By default this refuses (status
     blocked_image_destruction, nothing written) and names the image objectIds plus the
     gdocs_get_image / gdocs_upload_image / gdocs_insert_image round-trip. Pass
-    allow_image_destruction=True to overwrite anyway."""
+    allow_image_destruction=True to overwrite anyway.
+
+    Status "written" is returned ONLY when every insert batch succeeded — Google API
+    errors are propagated, not swallowed. Because the tab is cleared before inserting,
+    an insert failure is destructive: it is reported as status
+    "cleared_but_write_failed" (previous content lost; tab empty or partially written,
+    with the Google error and batchesCompleted), never as success. Transient 429
+    rate-limit errors are retried with backoff before failing.
+
+    House style (#2001): after a successful write the tab is normalized to
+    house_style.json and linted in code. The result carries a compact "style"
+    summary ({ok, errors, warnings, by_rule, samples, normalized}); if errors remain,
+    the status gets a "_but_style_check_failed" suffix and "error" is set. Do not
+    read the doc back to check formatting.
+"""
     err = policy.gate_write("write_to_tab", doc_id)
     if err:
         return json.dumps({"error": err})
     try:
         out = _write_to_tab(doc_id, tab_id, content,
-                            code_font=code_font or DEFAULT_CODE_FONT,
-                            bullet_preset=bullet_preset,
                             allow_image_destruction=allow_image_destruction)
         if out.get("status") == "written":
             policy.append_audit("write_to_tab", doc_id, f"tab={tab_id}")
+            out = style_gate.gate(out, doc_id, tab_id)
         return json.dumps(out, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)})

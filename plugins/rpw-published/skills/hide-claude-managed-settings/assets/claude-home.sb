@@ -1,0 +1,15 @@
+;; Seatbelt policy for claude-home.
+;; Behaves exactly like a normal terminal session, except the enterprise
+;; managed-settings policy directory is unreadable. Last-match-wins: the
+;; deny below carves that path out of (allow default).
+(version 1)
+(allow default)
+
+;; Hide the enterprise managed-settings policy from sandboxed sessions.
+(deny file-read*
+  (subpath "/Library/Application Support/ClaudeCode"))
+
+;; Do not let a sandboxed session weaken future launches.
+(deny file-write*
+  (subpath (string-append (param "HOME") "/.config/claude-home"))
+  (literal (string-append (param "HOME") "/.local/bin/claude-home")))

@@ -1,6 +1,6 @@
 ---
 name: doc-styling
-description: Formatting and voice rules for authoring or editing Google Docs and customer-facing prose. Trigger on "write this up as a customer doc", "draft a gdoc", "format this doc", "email-style formatting", or editing any Google Doc tab or outbound customer write-up. Encodes email/technical-note structure (real headings, dashed bullets, bold scan-targets, inline code, functional emojis), customer-doc voice, pain-avoided framing, and render gotchas. NOT for plain code docs, READMEs, or code comments.
+description: Formatting and voice rules for authoring or editing Google Docs and customer-facing prose. Trigger on "write this up as a customer doc", "draft a gdoc", "format this doc", "email-style formatting", or editing any Google Doc tab or outbound customer write-up. Encodes email/technical-note structure (real headings, dashed + nested bullets, bold scan-targets, inline code, emojis), customer-doc voice, pain-avoided framing, and render gotchas. NOT for plain code docs, READMEs, or code comments.
 ---
 
 # Doc Styling — customer-doc & gdoc email-style formatting
@@ -22,6 +22,8 @@ different session, ignores it entirely).
 
 **Proactive use:** reach for these rules whenever you're producing prose a human will read
 as a deliverable — a status doc, a recommendation memo, a customer summary, a technical note.
+Structure, ordering, and length of the content itself (problem-before-solution, budgets,
+when a visual earns its place) come from the `communication` skill; this skill renders it.
 
 **NOT for:** plain code documentation, READMEs, API reference, inline code comments, or
 commit/PR bodies. Those have their own conventions; don't impose email-style section tags on them.
@@ -32,8 +34,34 @@ Write for scanning, the way a well-structured internal email or technical note r
 
 - **Real headings, not bold paragraphs.** Use actual H2 / H3 heading levels (`##`, `###`)
   so the doc has a navigable structure — never fake a heading by bolding a normal line.
-- **One blank line between sections.** Give the reader breathing room; don't wall-of-text.
+- **Headings space the sections, not blank lines.** In the house style a heading's own
+  space-above separates it from the text before it (`house_style.json`). Do not add empty
+  paragraphs next to headings; `gdocs_lint` reports them as `blank.adjacent_heading`.
 - **Dashed bullets** (`-`) for lists. Keep each bullet to one idea.
+- **Nest sub-points instead of flattening them.** When several bullets are details of one
+  idea, indent them under it — 2–3 levels of nesting is normal and correct, not a smell. A
+  flat list forces the reader to re-derive the grouping you already knew.
+
+  Before — flat, the reader has to work out which lines belong together:
+
+  ```markdown
+  - **Cost** is driven by cluster size
+  - Autoscaling is off
+  - Node type is memory-optimised
+  - **Latency** is driven by file layout
+  - Small files dominate
+  ```
+
+  After — the grouping is visible:
+
+  ```markdown
+  - **Cost** — driven by cluster size
+    - Autoscaling is off
+    - Node type is memory-optimised
+  - **Latency** — driven by file layout
+    - Small files dominate
+  ```
+
 - **Bold the scan-target in each bullet.** Lead each bullet with the noun/phrase a skimming
   reader is hunting for, in **bold**, then the detail. The reader should get the gist from
   the bold words alone.
@@ -82,36 +110,27 @@ Write for scanning, the way a well-structured internal email or technical note r
 
 ## Render gotchas — google-docs MCP
 
-Verified against the current `plugins/rpw-published/mcp-servers/google-docs/` source. Behavior
-has shifted as bugs were fixed — trust the code, and when a live doc matters, validate the
-render (create a scratch doc, write test content, read it back or eyeball it, then delete it).
+- **Check formatting with `gdocs_lint`, never by reading the doc back** (#2001). After any
+  Docs write, call `gdocs_lint(doc_id, tab_id)` (shell: `rpw-mcp-cli call google-docs gdocs_lint --json '{"doc_id":"DOC","tab_id":"T"}'`).
+  It compares every paragraph and run to `house_style.json` in code and returns
+  `{ok, errors, warnings, by_rule, violations}` with no doc content. Report that result.
+  Do not re-read the tab to check spacing, fonts or bullets. Warnings (non-dash bullets,
+  which the API cannot create) never set `ok` to false.
+- **`house_style.json` is the one source of style values.** They come from the owner's
+  Jam Session template: Arial 13pt body at 1.15 line spacing, H1/H2/H3 at 22/18/16pt bold,
+  `-` bullets on a 36pt indent ladder.
+- **Write tools enforce the style.** `gdocs_create`, `gdocs_update`, `gdocs_add_tab` and
+  `gdocs_write_to_tab` normalize the tab they wrote, then lint it. Their result carries a
+  `style` summary. A status ending in `_but_style_check_failed` is an error: report it, and
+  do not hand the doc over as done. Run `gdocs_lint` yourself only after other writes.
 
-- **Markdown tables in nested sub-tabs write correctly** (was #198, fixed). The historical
-  bug — tables rendering as empty grids in sub-tabs — came from a flat `tabId` scan that missed
-  nested tabs; `write_to_tab` now resolves tabs through the recursive `_find_tab_by_id`, so
-  tables land with content at any nesting depth. Tables are safe; you don't need to fall back
-  to bulleted rows to work around this.
-- **Hyperlinks, inline-cell formatting, and nested link-bullets render correctly** (#222,
-  verified fixed). Code hyperlinks (`` [`code`](url) ``) get color-only styling (the auto
-  underline is cleared so it doesn't clash with underscores); codespans inside **bold** are
-  emitted at `weight:700` so they stay bold *and* monospace.
-- **Bullet inheritance + paragraph spacing are fixed** (#301). Inherited list bullets are
-  cleared and paragraph spacing is normalized, so re-writing a tab no longer leaves stray
-  bullets or compressed/expanded spacing from prior content.
-- **`gdocs_read` reads nested sub-tabs and their tables** (#216). The current read path
-  recurses into `childTabs` at any depth and renders each table's cells as tab-separated text,
-  so sub-tab table content *is* surfaced. Doc-read API shape has bitten before (per-tab vs.
-  top-level nesting), so for a high-stakes render still confirm against the live doc rather than
-  trusting a single read.
-- **`gdocs_find_replace` supports tab scoping.** Passing `tab_id` now sends the API-correct
-  `tabsCriteria.tabIds`, so a tab-scoped replace works — the old Docs-API 400 came from an
-  unsupported request shape and no longer applies. A unique `find_text` still works doc-wide
-  when you omit `tab_id`; prefer that when the target string is already unique.
+Per-construct renderer behaviour (tables, links, bullets, tabs, find/replace):
+[references/render-gotchas.md](references/render-gotchas.md).
 
 ## Quick checklist before you ship a doc
 
 - [ ] Real H2/H3 headings; no bolded-line fake headings
-- [ ] Every bullet leads with a **bold** scan-target
+- [ ] Every bullet leads with a **bold** scan-target; sub-points nested, not flattened
 - [ ] Identifiers in `inline code`; links as markdown
 - [ ] Only functional section-tag emojis — zero cheerleader emojis
 - [ ] Concrete nouns, not jargon; optional asks labeled `Optional`
@@ -119,4 +138,5 @@ render (create a scratch doc, write test content, read it back or eyeball it, th
 - [ ] Pain framed in the customer's own words; over-caveating cut
 - [ ] No parallel-customer references anywhere in an outbound doc
 - [ ] Cover image (if any) has no baked-in text
+- [ ] `gdocs_lint` returns `ok: true` for every tab you wrote (formatting is checked in code, not by re-reading)
 - [ ] All tabs consistent — re-open siblings and confirm they match this format

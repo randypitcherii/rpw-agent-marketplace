@@ -19,6 +19,23 @@ import docs_write
 import mcp_server
 import policy
 
+_GATE_PATCH = None
+
+
+def setUpModule():
+    """This suite tests write paths, not styling: stub the post-write house-style
+    gate (#2001) so a mocked write never reaches the real Docs API through it.
+    The gate itself is covered by test_style_gate.py."""
+    global _GATE_PATCH
+    from unittest.mock import patch as _patch
+    _GATE_PATCH = _patch("style_gate.apply", return_value={
+        "ok": True, "errors": 0, "warnings": 0, "by_rule": {}, "samples": [], "tabId": None, "normalized": 0})
+    _GATE_PATCH.start()
+
+
+def tearDownModule():
+    _GATE_PATCH.stop()
+
 
 class TestReadOnlyMode(unittest.TestCase):
     """Read-only mode blocks all mutating tools."""
@@ -71,13 +88,13 @@ class TestReadOnlyMode(unittest.TestCase):
 
     def test_read_only_blocks_share(self):
         os.environ["GDOCS_READ_ONLY"] = "true"
-        result = mcp_server.gdocs_share("doc123", "a@b.com")
+        result = mcp_server.gdocs_share("doc123", "reader@example.com")
         self.assertIn("error", result)
         self.assertIn("Read-only", result)
 
     def test_read_only_blocks_insert_person(self):
         os.environ["GDOCS_READ_ONLY"] = "true"
-        result = mcp_server.gdocs_insert_person("doc123", "a@b.com")
+        result = mcp_server.gdocs_insert_person("doc123", "reader@example.com")
         self.assertIn("error", result)
         self.assertIn("Read-only", result)
 
@@ -175,7 +192,7 @@ class TestAllowListDocCheck(unittest.TestCase):
             with patch("mcp_server.update_doc") as mock_update:
                 mock_update.return_value = {"status": "updated"}
                 result = mcp_server.gdocs_update("doc123", "content")
-        self.assertNotIn("error", result)
+        self.assertNotIn("error", json.loads(result))
 
 
 class TestAuditLog(unittest.TestCase):
@@ -369,20 +386,38 @@ class TestInsertImage(unittest.TestCase):
         self.assertNotIn("objectSize", inline)
 
 
-class TestGdocsRequireTargetFolder(unittest.TestCase):
-    """list_docs and create_doc raise RuntimeError when TARGET_FOLDER_ID is empty."""
+class TestGdocsOptionalTargetFolder(unittest.TestCase):
+    """GDOCS_TARGET_FOLDER_ID is optional: unset skips the move (create) and
+    widens the listing to recent Docs across Drive (list)."""
 
-    def test_list_docs_raises_when_target_folder_empty(self):
+    def test_list_docs_without_folder_lists_recent_docs(self):
         with patch.object(config, "TARGET_FOLDER_ID", ""):
-            with self.assertRaises(RuntimeError) as ctx:
+            with patch("auth.api") as mock_api:
+                mock_api.return_value = {"files": [{"id": "d1", "name": "Doc"}]}
+                out = docs_read.list_docs()
+        self.assertEqual(out, [{"id": "d1", "name": "Doc"}])
+        url = mock_api.call_args[0][1]
+        self.assertNotIn("in+parents", url)
+        self.assertIn("mimeType='application/vnd.google-apps.document'", url)
+
+    def test_list_docs_with_folder_stays_folder_scoped(self):
+        with patch.object(config, "TARGET_FOLDER_ID", "folder123"):
+            with patch("auth.api") as mock_api:
+                mock_api.return_value = {"files": []}
                 docs_read.list_docs()
-        self.assertIn("GDOCS_TARGET_FOLDER_ID", str(ctx.exception))
+        url = mock_api.call_args[0][1]
+        self.assertIn("'folder123'+in+parents", url)
 
-    def test_create_doc_raises_when_target_folder_empty(self):
+    def test_create_doc_without_folder_skips_move_and_reports_created(self):
         with patch.object(config, "TARGET_FOLDER_ID", ""):
-            with self.assertRaises(RuntimeError) as ctx:
-                docs_write.create_doc("Test Title")
-        self.assertIn("GDOCS_TARGET_FOLDER_ID", str(ctx.exception))
+            with patch("auth.api") as mock_api:
+                mock_api.return_value = {"documentId": "doc9"}
+                result = docs_write.create_doc("Test Title")
+        self.assertEqual(result["status"], "created")
+        self.assertNotIn("moveError", result)
+        urls = [c[0][1] for c in mock_api.call_args_list]
+        self.assertEqual(len(urls), 1, f"expected only the create call, got: {urls}")
+        self.assertNotIn("drive/v3", " ".join(urls))
 
 
 class TestFindReplaceTabScoping(unittest.TestCase):
@@ -435,7 +470,7 @@ class TestInsertMarkdownConstructs(unittest.TestCase):
         bullet_reqs = [r for r in all_reqs if "createParagraphBullets" in r]
         self.assertGreaterEqual(len(bullet_reqs), 1)
         preset = bullet_reqs[0]["createParagraphBullets"]["bulletPreset"]
-        self.assertIn("BULLET_DISC", preset)
+        self.assertEqual(preset, config.BULLET_PRESET)
         # Range must cover all 3 items — startIndex < endIndex
         rng = bullet_reqs[0]["createParagraphBullets"]["range"]
         self.assertIn("startIndex", rng)
@@ -471,18 +506,90 @@ class TestInsertMarkdownConstructs(unittest.TestCase):
         self.assertEqual(len(bullet_reqs), 1)
         list_rng = bullet_reqs[0]["createParagraphBullets"]["range"]
 
-        # The list range must also be explicitly reset to NORMAL_TEXT so the
+        # Every list line must be reset to NORMAL_TEXT (per line, #2001) so the
         # bullets do not inherit HEADING_2 from the preceding heading.
-        normal_reqs = [
-            r for r in all_reqs
+        normal_rngs = [
+            (r["updateParagraphStyle"]["range"]["startIndex"], r["updateParagraphStyle"]["range"]["endIndex"])
+            for r in all_reqs
             if "updateParagraphStyle" in r
             and r["updateParagraphStyle"].get("paragraphStyle", {}).get("namedStyleType") == "NORMAL_TEXT"
-            and r["updateParagraphStyle"]["range"].get("startIndex") == list_rng["startIndex"]
-            and r["updateParagraphStyle"]["range"].get("endIndex") == list_rng["endIndex"]
+            and r["updateParagraphStyle"]["range"]["startIndex"] >= list_rng["startIndex"]
         ]
+        self.assertEqual(normal_rngs[0][0], list_rng["startIndex"])
+        self.assertEqual(normal_rngs[-1][1], list_rng["endIndex"])
+        self.assertEqual(len(normal_rngs), 2, "one NORMAL_TEXT reset per list line")
+
+    def test_list_item_inline_styles_survive_the_normal_text_reset(self):
+        """Live regression (#2001): applying namedStyleType resets a paragraph's text
+        runs, so each list line's NORMAL_TEXT reset must come BEFORE its inline
+        styles — a list-wide reset after them wiped **bold** and `code` from every
+        list item."""
+        from markdown_render import _insert_markdown
+
+        with patch("auth.api") as mock_api:
+            mock_api.return_value = {}
+            _insert_markdown("doc1", "- **bold** and `code`\n- plain\n")
+        reqs = self._collect_all_requests(mock_api)
+        kinds = [next(iter(r)) for r in reqs]
+        resets = [(i, r["updateParagraphStyle"]["range"]) for i, r in enumerate(reqs)
+                  if "updateParagraphStyle" in r
+                  and "namedStyleType" in r["updateParagraphStyle"]["fields"].split(",")]
+        inline = [(i, r["updateTextStyle"]["range"]) for i, r in enumerate(reqs) if "updateTextStyle" in r]
+        self.assertEqual(len(inline), 2)
+
+        def covers(outer, inner):
+            return outer["startIndex"] <= inner["startIndex"] and inner["endIndex"] <= outer["endIndex"]
+
+        for i, rng in inline:
+            covering = [j for j, r in resets if covers(r, rng)]
+            self.assertTrue(covering, f"no NORMAL_TEXT reset covers inline range {rng}")
+            self.assertTrue(all(j < i for j in covering),
+                            f"a named-style reset over {rng} runs after its inline style")
+        self.assertLess(max(i for i, _ in inline), kinds.index("createParagraphBullets"))
+
+    def test_nested_list_tab_consumption_shrinks_following_indexes(self):
+        """Regression (#298): createParagraphBullets consumes (deletes) the leading
+        nesting tabs, so every request emitted after it must use post-consumption
+        indexes. Before the fix, a nested list made the NORMAL_TEXT reset — and all
+        following content — target indexes past the segment end, failing the whole
+        batch live with "Index N must be less than the end index of the referenced
+        segment" (the tab's prior content already cleared: destructive)."""
+        from markdown_render import _insert_markdown
+
+        with patch("auth.api") as mock_api:
+            mock_api.return_value = {}
+            # 3 nesting tabs total: "\tb\n" (1) + "\t\tc\n" (2).
+            _insert_markdown("doc1", "- a\n  - b\n    - c\n\nafter\n")
+
+        all_reqs = self._collect_all_requests(mock_api)
+
+        # Inserted list text spans [1, 10) pre-consumption:
+        # "a\n"(2) + "\tb\n"(3) + "\t\tc\n"(4). Bullets target the pre-consumption
+        # range — the tabs must still exist for Docs to derive nesting levels.
+        bullet_rng = [r["createParagraphBullets"]["range"] for r in all_reqs
+                      if "createParagraphBullets" in r][0]
+        self.assertEqual((bullet_rng["startIndex"], bullet_rng["endIndex"]), (1, 10))
+
+        # The per-line NORMAL_TEXT resets run BEFORE bullets (#2001), so they use
+        # pre-consumption ranges: "a\n" [1,3), "\tb\n" [3,6), "\t\tc\n" [6,10).
+        normal_rngs = [(r["updateParagraphStyle"]["range"]["startIndex"],
+                        r["updateParagraphStyle"]["range"]["endIndex"]) for r in all_reqs
+                       if "updateParagraphStyle" in r
+                       and r["updateParagraphStyle"].get("paragraphStyle", {}).get("namedStyleType")
+                       == "NORMAL_TEXT"][:3]
+        self.assertEqual(normal_rngs, [(1, 3), (3, 6), (6, 10)])
+
+        # Content following the list must land at the post-consumption index too:
+        # the restored post-list blank paragraph at 7, then "after" at 8.
+        inserts = [r["insertText"] for r in all_reqs if "insertText" in r]
+        blank = [i for i in inserts if i["text"] == "\n"]
+        self.assertEqual(blank[0]["location"]["index"], 7,
+                         "the post-list blank must use the post-tab-consumption index")
+        after_inserts = [i for i in inserts if i["text"] == "after\n"]
+        self.assertEqual(len(after_inserts), 1)
         self.assertEqual(
-            len(normal_reqs), 1,
-            "expected exactly one updateParagraphStyle(NORMAL_TEXT) over the list range",
+            after_inserts[0]["location"]["index"], 8,
+            "content after a nested list must use the post-tab-consumption index",
         )
 
     def test_inline_code_uses_courier_new(self):
@@ -827,9 +934,10 @@ class TestInsertMarkdownConstructs(unittest.TestCase):
         from markdown_render import _insert_markdown
 
         # 105 separate paragraphs (blank line between each).
-        # Each paragraph now emits 3 requests: insertText + updateParagraphStyle
-        # (NORMAL_TEXT + spaceBelow) + deleteParagraphBullets (#301).
-        # 105 paragraphs × 3 requests = 315 requests → batches of 50×6, then 15.
+        # Each paragraph emits 3 requests: insertText + updateParagraphStyle
+        # (NORMAL_TEXT + house rhythm) + deleteParagraphBullets (#301). The 104
+        # blank markdown lines are preserved as empty paragraphs (#1768), 3 requests
+        # each: (105 + 104) × 3 = 627 requests → batches of 50×12, then 27.
         # Single newline produces softbreak inside one paragraph;
         # double newline creates separate paragraph tokens.
         content = "\n\n".join(f"paragraph {i}" for i in range(105))
@@ -838,7 +946,7 @@ class TestInsertMarkdownConstructs(unittest.TestCase):
             _insert_markdown("doc1", content)
 
         call_sizes = [len(call[0][2]["requests"]) for call in mock_api.call_args_list]
-        self.assertEqual(call_sizes, [50, 50, 50, 50, 50, 50, 15])
+        self.assertEqual(call_sizes, [50] * 12 + [27])
 
     def test_table_basic(self):
         """Tables emit insertTable batchUpdate request (real Docs table, not pipe text)."""
@@ -1152,6 +1260,9 @@ class TestInsertMarkdownConstructs(unittest.TestCase):
         from markdown_render import _insert_markdown
 
         content = "Intro\n\n| H1 | H2 |\n|---|---|\n| r1c1 | r1c2 |\n\n![Diagram](https://example.com/diagram.png)"
+        # The blank markdown line after the table is preserved as an empty paragraph
+        # (#1768 house style), so it takes the clamped append index endIndex - 1 = 15
+        # and the image lands one unit later at 16.
         insert_table_seen = False
         cell_fill_seen = False
         image_locations = []
@@ -1181,8 +1292,8 @@ class TestInsertMarkdownConstructs(unittest.TestCase):
         self.assertEqual(len(image_locations), 1)
         self.assertEqual(
             image_locations[0]["index"],
-            15,
-            "insertInlineImage must use endIndex - 1 when appending after a table in a tab",
+            16,
+            "insertInlineImage must follow the blank paragraph placed at endIndex - 1",
         )
 
     def test_table_emits_no_pipe_characters_anywhere(self):
@@ -1362,6 +1473,186 @@ class TestInsertMarkdownConstructs(unittest.TestCase):
             elif "createParagraphBullets" in req:
                 rng = req["createParagraphBullets"]["range"]
                 self.assertEqual(rng.get("tabId"), "t.xyz", f"createParagraphBullets missing tabId: {req}")
+
+
+class TestListItemContentLoss(unittest.TestCase):
+    """Regression (#528): list items silently lost content.
+
+    All three symptoms were silent — the write "succeeded" and the doc looked
+    plausible, so only an assertion on the emitted requests catches a relapse:
+      1. an inline image in a list item was dropped (image tokens flatten to "",
+         and an image-only item flattened to "" lost its whole line);
+      2. a loose (multi-paragraph) item kept only its first paragraph;
+      3. an empty item emitted nothing, renumbering every following item.
+    """
+
+    def _collect(self, mock_api):
+        all_requests = []
+        for call in mock_api.call_args_list:
+            if len(call[0]) <= 2:
+                continue  # GET, no body
+            all_requests.extend(call[0][2].get("requests", []))
+        return all_requests
+
+    def _render(self, content, **kwargs):
+        from markdown_render import _insert_markdown
+
+        with patch("auth.api") as mock_api:
+            mock_api.return_value = {}
+            _insert_markdown("doc1", content, **kwargs)
+        return self._collect(mock_api)
+
+    def test_image_only_list_item_emits_inline_image(self):
+        all_reqs = self._render("- ![alt](https://x/img.png)\n- plain\n")
+
+        images = [r["insertInlineImage"] for r in all_reqs if "insertInlineImage" in r]
+        self.assertEqual(
+            len(images), 1,
+            "inline image in a list item must be inserted, not flattened away",
+        )
+        self.assertEqual(images[0]["uri"], "https://x/img.png")
+        # The image occupies index 1 and the item's newline index 2, so the
+        # following item starts at 3 — the image is a real character, and the
+        # bullet range must cover both items.
+        self.assertEqual(images[0]["location"]["index"], 1)
+        plain = [r["insertText"] for r in all_reqs
+                 if "insertText" in r and r["insertText"]["text"] == "plain\n"]
+        self.assertEqual(len(plain), 1)
+        self.assertEqual(plain[0]["location"]["index"], 3)
+        bullet_rng = [r["createParagraphBullets"]["range"] for r in all_reqs
+                      if "createParagraphBullets" in r][0]
+        self.assertEqual((bullet_rng["startIndex"], bullet_rng["endIndex"]), (1, 9))
+
+    def test_image_between_text_in_list_item_keeps_text_and_styles(self):
+        all_reqs = self._render("- see ![alt](https://x/img.png) **here**\n")
+
+        inserts = [(r["insertText"]["location"]["index"], r["insertText"]["text"])
+                   for r in all_reqs if "insertText" in r]
+        self.assertEqual(inserts, [(1, "see "), (6, " here"), (11, "\n")])
+        images = [r["insertInlineImage"] for r in all_reqs if "insertInlineImage" in r]
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0]["location"]["index"], 5)
+        # Inline styling offsets must be measured past the image, which occupies
+        # one index: "here" starts at 7 (1 + "see " + image) and runs 4 chars.
+        bold = [r["updateTextStyle"]["range"] for r in all_reqs
+                if "updateTextStyle" in r
+                and r["updateTextStyle"]["textStyle"].get("bold")]
+        self.assertEqual(len(bold), 1)
+        self.assertEqual((bold[0]["startIndex"], bold[0]["endIndex"]), (7, 11))
+
+    def test_nested_image_list_item_keeps_tab_prefix_before_image(self):
+        """The nesting tab must still lead the line when the item opens with an
+        image — otherwise the item loses its bullet level (and #298's tab
+        accounting) on the segmented path."""
+        all_reqs = self._render("- top\n  - ![alt](https://x/img.png)\n")
+
+        inserts = [(r["insertText"]["location"]["index"], r["insertText"]["text"])
+                   for r in all_reqs if "insertText" in r]
+        self.assertIn((5, "\t"), inserts, f"nested image item lost its tab: {inserts}")
+        images = [r["insertInlineImage"] for r in all_reqs if "insertInlineImage" in r]
+        self.assertEqual(images[0]["location"]["index"], 6)
+        # One tab consumed by createParagraphBullets: pre-consumption end 8.
+        # The per-line NORMAL_TEXT resets run before bullets (#2001), so they are
+        # pre-consumption: "top\n" [1,5) and the image line "\t<img>\n" [5,8).
+        bullet_rng = [r["createParagraphBullets"]["range"] for r in all_reqs
+                      if "createParagraphBullets" in r][0]
+        self.assertEqual(bullet_rng["endIndex"], 8)
+        normal_rngs = [(r["updateParagraphStyle"]["range"]["startIndex"],
+                        r["updateParagraphStyle"]["range"]["endIndex"]) for r in all_reqs
+                       if "updateParagraphStyle" in r
+                       and r["updateParagraphStyle"]["paragraphStyle"].get("namedStyleType")
+                       == "NORMAL_TEXT"]
+        self.assertEqual(normal_rngs, [(1, 5), (5, 8)])
+
+    def test_loose_list_item_keeps_every_paragraph(self):
+        all_reqs = self._render("- first para\n\n  second para\n- other\n")
+
+        inserts = [(r["insertText"]["location"]["index"], r["insertText"]["text"])
+                   for r in all_reqs if "insertText" in r]
+        self.assertEqual(
+            inserts,
+            [(1, "first para\n"), (12, "second para\n"), (24, "other\n")],
+            "the 2nd paragraph of a loose list item must survive",
+        )
+
+    def test_loose_continuation_is_unbulleted_and_indented(self):
+        """The continuation paragraph is inserted as an ordinary list line so its
+        text survives, then un-bulleted and indented to the item's text column —
+        leaving the bullet on would split one item into two (and renumber an
+        ordered list). Both fix-ups must run AFTER createParagraphBullets."""
+        all_reqs = self._render("1. first para\n\n   second para\n2. other\n")
+
+        kinds = [next(iter(r)) for r in all_reqs]
+        self.assertIn("deleteParagraphBullets", kinds)
+        self.assertLess(
+            kinds.index("createParagraphBullets"), kinds.index("deleteParagraphBullets"),
+            "un-bulleting the continuation must follow createParagraphBullets",
+        )
+        unbullet = [r["deleteParagraphBullets"]["range"] for r in all_reqs
+                    if "deleteParagraphBullets" in r]
+        self.assertEqual(len(unbullet), 1)
+        self.assertEqual((unbullet[0]["startIndex"], unbullet[0]["endIndex"]), (12, 24))
+        indent = [r["updateParagraphStyle"] for r in all_reqs
+                  if "updateParagraphStyle" in r
+                  and "indentStart" in r["updateParagraphStyle"]["paragraphStyle"]]
+        self.assertEqual(len(indent), 1)
+        self.assertEqual(indent[0]["range"], unbullet[0])
+        self.assertEqual(
+            indent[0]["paragraphStyle"]["indentStart"],
+            {"magnitude": config.LIST_INDENT_PER_LEVEL_PT, "unit": "PT"},
+        )
+        self.assertEqual(indent[0]["fields"], "indentStart,indentFirstLine")
+
+    def test_loose_continuation_ranges_are_post_tab_consumption(self):
+        """A continuation paragraph's fix-up ranges run after
+        createParagraphBullets has deleted the nesting tabs, so they must use
+        post-consumption indexes — the #298 trap, now reachable one level down."""
+        all_reqs = self._render("- a\n  - n1\n\n    n2\n- b\n\n  b2\n")
+
+        # Pre-consumption: "a\n"(1-3) "\tn1\n"(3-7) "\tn2\n"(7-11) "b\n"(11-13)
+        # "b2\n"(13-16); 2 tabs consumed -> "n2\n" lands at 6-9, "b2\n" at 11-14.
+        unbullet = [(r["deleteParagraphBullets"]["range"]["startIndex"],
+                     r["deleteParagraphBullets"]["range"]["endIndex"])
+                    for r in all_reqs if "deleteParagraphBullets" in r]
+        self.assertEqual(unbullet, [(6, 9), (11, 14)])
+        # The nested continuation indents one level deeper than the top-level one.
+        magnitudes = [r["updateParagraphStyle"]["paragraphStyle"]["indentStart"]["magnitude"]
+                      for r in all_reqs
+                      if "updateParagraphStyle" in r
+                      and "indentStart" in r["updateParagraphStyle"]["paragraphStyle"]]
+        self.assertEqual(
+            magnitudes,
+            [2 * config.LIST_INDENT_PER_LEVEL_PT, config.LIST_INDENT_PER_LEVEL_PT],
+        )
+
+    def test_empty_list_item_still_emits_a_line(self):
+        """An item with no text emitted nothing at all, so the bullet vanished and
+        every following item of an ordered list shifted up by one number."""
+        all_reqs = self._render("1. one\n2.\n3. three\n")
+
+        inserts = [(r["insertText"]["location"]["index"], r["insertText"]["text"])
+                   for r in all_reqs if "insertText" in r]
+        self.assertEqual(inserts, [(1, "one\n"), (5, "\n"), (6, "three\n")])
+        bullet_rng = [r["createParagraphBullets"]["range"] for r in all_reqs
+                      if "createParagraphBullets" in r][0]
+        self.assertEqual(
+            (bullet_rng["startIndex"], bullet_rng["endIndex"]), (1, 12),
+            "the empty item's line must be inside the bulleted range",
+        )
+
+    def test_list_item_content_carries_tab_id(self):
+        """Every request on the new list paths must be tab-scoped, or the write
+        lands in the document body instead of the tab."""
+        all_reqs = self._render(
+            "- ![alt](https://x/img.png)\n- loose\n\n  more\n", tab_id="t.abc"
+        )
+
+        self.assertTrue(any("insertInlineImage" in r for r in all_reqs))
+        self.assertTrue(any("deleteParagraphBullets" in r for r in all_reqs))
+        for req in all_reqs:
+            payload = next(iter(req.values()))
+            scope = payload.get("location") or payload.get("range") or {}
+            self.assertEqual(scope.get("tabId"), "t.abc", f"missing tabId: {req}")
 
 
 class TestTableCellInlineFormatting(unittest.TestCase):
@@ -1853,47 +2144,8 @@ class TestParagraphBulletClearAndSpacing(unittest.TestCase):
 
     # --- Bug 2: inter-paragraph spacing --------------------------------------
 
-    def test_paragraph_emits_space_below(self):
-        """A normal paragraph carries a spaceBelow so prose isn't smashed together."""
-        from markdown_render import _insert_markdown
-
-        with patch("auth.api") as mock_api:
-            mock_api.return_value = {}
-            _insert_markdown("doc1", "Prose paragraph.")
-
-        all_reqs = self._collect_all_requests(mock_api)
-        spaced = [
-            r for r in all_reqs
-            if "updateParagraphStyle" in r
-            and r["updateParagraphStyle"]["paragraphStyle"].get("spaceBelow", {}).get("unit") == "PT"
-            and r["updateParagraphStyle"]["paragraphStyle"]["spaceBelow"].get("magnitude", 0) > 0
-        ]
-        self.assertGreaterEqual(len(spaced), 1, "paragraph must set a positive spaceBelow")
-        # The fields mask must include spaceBelow or the API drops it.
-        self.assertIn("spaceBelow", spaced[0]["updateParagraphStyle"]["fields"])
-
-    def test_heading_space_below_composes_with_named_style(self):
-        """Heading style request keeps namedStyleType AND adds spaceBelow in one mask."""
-        from markdown_render import _insert_markdown
-
-        with patch("auth.api") as mock_api:
-            mock_api.return_value = {}
-            _insert_markdown("doc1", "## Section")
-
-        all_reqs = self._collect_all_requests(mock_api)
-        heading = [
-            r["updateParagraphStyle"] for r in all_reqs
-            if "updateParagraphStyle" in r
-            and r["updateParagraphStyle"]["paragraphStyle"].get("namedStyleType") == "HEADING_2"
-        ]
-        self.assertEqual(len(heading), 1)
-        self.assertEqual(heading[0]["paragraphStyle"]["spaceBelow"]["unit"], "PT")
-        self.assertIn("namedStyleType", heading[0]["fields"])
-        self.assertIn("spaceBelow", heading[0]["fields"])
-
-
 class TestCodeFont(unittest.TestCase):
-    """Gap 2b: code_font parameter controls font for inline code and code blocks."""
+    """#1768: code font is the house Courier New, not a caller-supplied parameter."""
 
     def _collect_all_requests(self, mock_api):
         all_requests = []
@@ -1902,40 +2154,8 @@ class TestCodeFont(unittest.TestCase):
             all_requests.extend(body.get("requests", []))
         return all_requests
 
-    def test_inline_code_uses_custom_font(self):
-        """_insert_markdown(code_font='Roboto Mono') uses that font for inline code."""
-        from markdown_render import _insert_markdown
-
-        with patch("auth.api") as mock_api:
-            mock_api.return_value = {}
-            _insert_markdown("doc1", "some `code` here", code_font="Roboto Mono")
-
-        all_reqs = self._collect_all_requests(mock_api)
-        style_reqs = [r for r in all_reqs if "updateTextStyle" in r]
-        font_reqs = [
-            r for r in style_reqs
-            if r["updateTextStyle"].get("textStyle", {}).get("weightedFontFamily", {}).get("fontFamily") == "Roboto Mono"
-        ]
-        self.assertGreaterEqual(len(font_reqs), 1, "Custom code_font should be used for inline code")
-
-    def test_code_block_uses_custom_font(self):
-        """_insert_markdown(code_font='Source Code Pro') uses that font for fenced code."""
-        from markdown_render import _insert_markdown
-
-        with patch("auth.api") as mock_api:
-            mock_api.return_value = {}
-            _insert_markdown("doc1", "```python\nprint(1)\n```", code_font="Source Code Pro")
-
-        all_reqs = self._collect_all_requests(mock_api)
-        style_reqs = [r for r in all_reqs if "updateTextStyle" in r]
-        font_reqs = [
-            r for r in style_reqs
-            if r["updateTextStyle"].get("textStyle", {}).get("weightedFontFamily", {}).get("fontFamily") == "Source Code Pro"
-        ]
-        self.assertGreaterEqual(len(font_reqs), 1, "Custom code_font should be used for code blocks")
-
     def test_inline_code_default_is_courier_new(self):
-        """Without code_font, inline code still defaults to Courier New."""
+        """Inline code is always Courier New."""
         from markdown_render import _insert_markdown
 
         with patch("auth.api") as mock_api:
@@ -1949,22 +2169,6 @@ class TestCodeFont(unittest.TestCase):
             if r["updateTextStyle"].get("textStyle", {}).get("weightedFontFamily", {}).get("fontFamily") == "Courier New"
         ]
         self.assertGreaterEqual(len(font_reqs), 1, "Default code font should be Courier New")
-
-    def test_mcp_write_to_tab_accepts_code_font(self):
-        """gdocs_write_to_tab MCP tool accepts code_font and passes it through."""
-        import json
-        os.environ["GDOCS_READ_ONLY"] = "false"
-        os.environ.pop("GDOCS_ALLOWED_FOLDERS", None)
-
-        with patch("mcp_server._write_to_tab") as mock_write:
-            mock_write.return_value = {"status": "written", "documentId": "doc1", "tabId": "tab1"}
-            result = mcp_server.gdocs_write_to_tab("doc1", "tab1", "some `code`", code_font="Roboto Mono")
-
-        data = json.loads(result)
-        self.assertNotIn("error", data)
-        mock_write.assert_called_once()
-        call_kwargs = mock_write.call_args[1]
-        self.assertEqual(call_kwargs.get("code_font"), "Roboto Mono")
 
     def test_mcp_write_to_tab_not_found_does_not_audit(self):
         """The MCP wrapper must not log an audit when the underlying write returns
@@ -3187,12 +3391,13 @@ class TestEmojiUtf16Indexing(unittest.TestCase):
         self.assertEqual(len(bullet_reqs), 1)
         start = bullet_reqs[0]["createParagraphBullets"]["range"]["startIndex"]
         # heading "🎯\n" = 🎯(2 UTF-16 units) + \n(1) = 3, inserted at index 1 → ends at 4.
+        # No blank paragraph follows a heading (#2001), so the list starts at 4.
         # The buggy len()-based math would count "🎯\n" as 2 and put the bullet at 3.
         self.assertEqual(start, 4, "list range must use UTF-16 length of the emoji heading")
 
 
 class TestBulletPreset(unittest.TestCase):
-    """#170: gdocs_write_to_tab bullet_preset passthrough + boundary validation."""
+    """#1768: the house bullet glyph set is fixed (no bullet_preset parameter)."""
 
     def _collect(self, mock_api):
         reqs = []
@@ -3201,8 +3406,10 @@ class TestBulletPreset(unittest.TestCase):
                 reqs.extend(call[0][2].get("requests", []))
         return reqs
 
-    def test_default_unordered_preset_unchanged(self):
-        """No bullet_preset → today's BULLET_DISC_CIRCLE_SQUARE."""
+    def test_default_unordered_preset_is_the_dash_fallback(self):
+        """#1770: dash bullets are unreachable over batchUpdate (four probes in
+        docs/research/2026-09-13-gdocs-dash-bullets.md), so the house preset is
+        BULLET_ARROW_DIAMOND_DISC — the closest horizontally-oriented glyph."""
         from markdown_render import _insert_markdown
 
         with patch("auth.api") as mock_api:
@@ -3210,58 +3417,7 @@ class TestBulletPreset(unittest.TestCase):
             _insert_markdown("doc1", "- a\n- b")
 
         bullets = [r for r in self._collect(mock_api) if "createParagraphBullets" in r]
-        self.assertEqual(bullets[0]["createParagraphBullets"]["bulletPreset"], "BULLET_DISC_CIRCLE_SQUARE")
-
-    def test_explicit_preset_overrides_unordered(self):
-        from markdown_render import _insert_markdown
-
-        with patch("auth.api") as mock_api:
-            mock_api.return_value = {}
-            _insert_markdown("doc1", "- a\n- b", bullet_preset="BULLET_ARROW_DIAMOND_DISC")
-
-        bullets = [r for r in self._collect(mock_api) if "createParagraphBullets" in r]
         self.assertEqual(bullets[0]["createParagraphBullets"]["bulletPreset"], "BULLET_ARROW_DIAMOND_DISC")
-
-    def test_preset_does_not_affect_ordered_lists(self):
-        """bullet_preset overrides only unordered lists; ordered stays NUMBERED."""
-        from markdown_render import _insert_markdown
-
-        with patch("auth.api") as mock_api:
-            mock_api.return_value = {}
-            _insert_markdown("doc1", "1. a\n2. b", bullet_preset="BULLET_ARROW_DIAMOND_DISC")
-
-        bullets = [r for r in self._collect(mock_api) if "createParagraphBullets" in r]
-        self.assertIn("NUMBERED", bullets[0]["createParagraphBullets"]["bulletPreset"])
-
-    def test_invalid_preset_rejected_before_any_api_call(self):
-        """Unknown preset → clean structured error, and the tab is NOT cleared."""
-        from docs_write import write_to_tab
-
-        with patch("auth.api") as mock_api:
-            result = write_to_tab("doc1", "t.abc", "- a", bullet_preset="NONSENSE_PRESET")
-
-        self.assertIn("error", result)
-        self.assertIn("NONSENSE_PRESET", result["error"])
-        mock_api.assert_not_called()
-
-    def test_valid_preset_set_is_exposed(self):
-        from config import VALID_BULLET_PRESETS
-
-        self.assertIn("BULLET_DISC_CIRCLE_SQUARE", VALID_BULLET_PRESETS)
-        self.assertIn("BULLET_CHECKBOX", VALID_BULLET_PRESETS)
-
-    def test_mcp_tool_threads_bullet_preset_through(self):
-        """gdocs_write_to_tab forwards bullet_preset to the lib write_to_tab."""
-        import mcp_server
-
-        with patch("policy.gate_write", return_value=None), \
-             patch("mcp_server._write_to_tab") as mock_w:
-            mock_w.return_value = {"status": "written", "documentId": "d", "tabId": "t"}
-            mcp_server.gdocs_write_to_tab("doc1", "t.abc", "- a", bullet_preset="BULLET_CHECKBOX")
-
-        _, kwargs = mock_w.call_args
-        self.assertEqual(kwargs.get("bullet_preset"), "BULLET_CHECKBOX")
-
 
 class TestMissingTargetEnvelope(unittest.TestCase):
     """#162: tab-target tools map the live API's missing-target error (404, or
@@ -3317,7 +3473,7 @@ class TestMissingTargetEnvelope(unittest.TestCase):
     def test_insert_person_missing_tab_returns_not_found(self):
         with patch("policy.api") as mock_api:
             mock_api.return_value = self._missing_tab_400()
-            data = json.loads(mcp_server.gdocs_insert_person("doc1", "a@b.com", index=5, tab_id="t.missing"))
+            data = json.loads(mcp_server.gdocs_insert_person("doc1", "reader@example.com", index=5, tab_id="t.missing"))
         self.assertNotIn("error", data, f"leaked raw envelope: {data}")
         self.assertEqual(data.get("status"), "not_found")
         self.assertEqual(data.get("tabId"), "t.missing")
@@ -3340,5 +3496,608 @@ class TestMissingTargetEnvelope(unittest.TestCase):
         self.assertEqual(data.get("parentTabId"), "t.missing")
 
 
+class TestInsertErrorPropagation(unittest.TestCase):
+    """#423: Google API error envelopes on the insert path must be propagated,
+    not discarded — a swallowed batch error used to mean silent truncation
+    (partial failure) or a silent empty tab (total failure) under a "written"
+    receipt."""
+
+    @staticmethod
+    def _api_error(code=500, message="backend boom"):
+        return {"error": {"code": code, "message": message, "status": "INTERNAL"}}
+
+    @staticmethod
+    def _tab_with_content(tab_id):
+        return {
+            "tabs": [{
+                "tabProperties": {"tabId": tab_id},
+                "documentTab": {"body": {"content": [
+                    {"startIndex": 0, "endIndex": 1},
+                    {"startIndex": 1, "endIndex": 30, "paragraph": {}},
+                    {"startIndex": 30, "endIndex": 31, "paragraph": {}},
+                ]}},
+            }]
+        }
+
+    def test_insert_markdown_batch_error_returns_insert_failed(self):
+        from markdown_render import _insert_markdown
+        with patch("auth.api") as mock_api:
+            mock_api.return_value = self._api_error()
+            result = _insert_markdown("doc1", "# Heading\n\nSome text")
+        self.assertEqual(result.get("status"), "insert_failed")
+        self.assertIn("backend boom", result.get("error", ""))
+        self.assertEqual(result.get("apiError", {}).get("code"), 500)
+        self.assertEqual(result.get("batchesCompleted"), 0)
+
+    def test_insert_markdown_success_returns_inserted_envelope(self):
+        from markdown_render import _insert_markdown
+        with patch("auth.api") as mock_api:
+            mock_api.return_value = {"replies": []}
+            result = _insert_markdown("doc1", "# Heading\n\nSome text")
+        self.assertEqual(result.get("status"), "inserted")
+        self.assertGreaterEqual(result.get("batchesSent", 0), 1)
+        self.assertGreaterEqual(result.get("requestsSent", 0), 1)
+
+    def test_insert_markdown_empty_content_is_inserted_with_zero_requests(self):
+        """Empty markdown renders zero requests: no API call, clean success envelope."""
+        from markdown_render import _insert_markdown
+        with patch("auth.api") as mock_api:
+            result = _insert_markdown("doc1", "")
+        self.assertEqual(result.get("status"), "inserted")
+        self.assertEqual(result.get("requestsSent"), 0)
+        mock_api.assert_not_called()
+
+    def test_insert_markdown_table_phase_error_returns_insert_failed(self):
+        """The table branch calls the API outside flush_requests; its errors must
+        propagate too."""
+        from markdown_render import _insert_markdown
+        api_error = self._api_error(code=400, message="table rejected")
+
+        def fake_api(method, url, data=None):
+            reqs = (data or {}).get("requests", [])
+            if any("insertTable" in r for r in reqs):
+                return api_error
+            return {"replies": []}
+
+        with patch("auth.api", side_effect=fake_api):
+            result = _insert_markdown("doc1", "intro\n\n| a | b |\n|---|---|\n| 1 | 2 |\n")
+        self.assertEqual(result.get("status"), "insert_failed")
+        self.assertIn("table rejected", result.get("error", ""))
+
+    def test_write_to_tab_insert_error_returns_cleared_but_write_failed(self):
+        """Destructive ordering fails closed: the clear already ran, so a failed
+        insert must name the loss — never return "written"."""
+        mock_doc = self._tab_with_content("tab.x")
+        api_error = self._api_error(code=429, message="Quota exceeded")
+
+        def fake_api(method, url, data=None):
+            if method == "GET":
+                return mock_doc
+            reqs = (data or {}).get("requests", [])
+            if any("insertText" in r for r in reqs):
+                return api_error
+            return {"replies": []}  # the clear batch succeeds
+
+        with patch("auth.api", side_effect=fake_api):
+            result = docs_write.write_to_tab("doc1", "tab.x", "# New content")
+
+        self.assertEqual(result.get("status"), "cleared_but_write_failed")
+        self.assertNotEqual(result.get("status"), "written")
+        self.assertIn("previous content is lost", result.get("error", ""))
+        self.assertIn("Quota exceeded", result.get("error", ""))
+        self.assertEqual(result.get("apiError", {}).get("code"), 429)
+
+    def test_write_to_tab_total_insert_failure_reports_empty_tab(self):
+        """The silent-empty-write mode (D2): every insert batch fails → the
+        envelope says the tab is empty, batchesCompleted == 0."""
+        mock_doc = self._tab_with_content("tab.x")
+
+        def fake_api(method, url, data=None):
+            if method == "GET":
+                return mock_doc
+            reqs = (data or {}).get("requests", [])
+            if any("insertText" in r for r in reqs):
+                return self._api_error()
+            return {"replies": []}
+
+        with patch("auth.api", side_effect=fake_api):
+            result = docs_write.write_to_tab("doc1", "tab.x", "para one")
+
+        self.assertEqual(result.get("status"), "cleared_but_write_failed")
+        self.assertEqual(result.get("batchesCompleted"), 0)
+        self.assertIn("empty", result.get("error", ""))
+
+    def test_write_to_tab_success_still_returns_written(self):
+        mock_doc = self._tab_with_content("tab.x")
+
+        def fake_api(method, url, data=None):
+            return mock_doc if method == "GET" else {"replies": []}
+
+        with patch("auth.api", side_effect=fake_api):
+            result = docs_write.write_to_tab("doc1", "tab.x", "# ok")
+        self.assertEqual(result.get("status"), "written")
+
+    def test_update_doc_insert_error_returns_update_failed(self):
+        def fake_api(method, url, data=None):
+            if method == "GET":
+                return {"body": {"content": [{"endIndex": 10}]}}
+            return self._api_error()
+
+        with patch("auth.api", side_effect=fake_api):
+            result = docs_write.update_doc("doc1", "appended text")
+        self.assertEqual(result.get("status"), "update_failed")
+        self.assertIn("error", result)
+
+    def test_add_tab_insert_error_returns_tab_added_but_content_failed(self):
+        add_reply = {"replies": [{"addDocumentTab": {"tabProperties": {"tabId": "t.new"}}}]}
+
+        def fake_api(method, url, data=None):
+            reqs = (data or {}).get("requests", [])
+            if any("addDocumentTab" in r for r in reqs):
+                return add_reply
+            return self._api_error()
+
+        with patch("auth.api", side_effect=fake_api):
+            result = docs_write.add_tab("doc1", "New Tab", content="# hello")
+        self.assertEqual(result.get("status"), "tab_added_but_content_failed")
+        self.assertEqual(result.get("tabId"), "t.new")
+        self.assertIn("error", result)
+
+
+class TestCreateDocMoveFailure(unittest.TestCase):
+    """#421: gdocs_create must surface a failed move into GDOCS_TARGET_FOLDER_ID
+    instead of reporting unqualified success while the doc sits in the Drive root."""
+
+    def _run_create(self, move_resp, content=None, insert_resp=None):
+        def fake_api(method, url, data=None):
+            if method == "POST" and url.endswith("/documents"):
+                return {"documentId": "d1"}
+            if method == "GET" and "drive/v3/files" in url:
+                return {"parents": ["rootParent"]}
+            if method == "PATCH" and "drive/v3/files" in url:
+                return move_resp
+            # batchUpdate for content insertion
+            return insert_resp if insert_resp is not None else {"replies": []}
+
+        with patch.object(config, "TARGET_FOLDER_ID", "folder123"):
+            with patch("auth.api", side_effect=fake_api) as mock_api:
+                result = docs_write.create_doc("Title", content)
+        return result, mock_api
+
+    def test_move_failure_surfaces_in_envelope(self):
+        move_error = {"error": {"code": 404, "message": "File not found: folder123"}}
+        result, _ = self._run_create(move_error)
+        self.assertEqual(result.get("status"), "created_but_move_failed")
+        self.assertEqual(result.get("documentId"), "d1")  # doc DOES exist
+        self.assertIn("Drive root", result.get("error", ""))
+        self.assertIn("folder123", result.get("error", ""))
+        self.assertEqual(result.get("moveError", {}).get("code"), 404)
+
+    def test_move_success_returns_created(self):
+        result, mock_api = self._run_create({"id": "d1", "parents": ["folder123"]})
+        self.assertEqual(result.get("status"), "created")
+        self.assertNotIn("error", result)
+        # The move goes through auth.api (with its timeouts/retries), not raw curl.
+        patch_calls = [c for c in mock_api.call_args_list if c[0][0] == "PATCH"]
+        self.assertEqual(len(patch_calls), 1)
+        self.assertIn("addParents=folder123", patch_calls[0][0][1])
+
+    def test_move_and_content_both_fail(self):
+        move_error = {"error": {"code": 403, "message": "insufficientPermissions"}}
+        insert_error = {"error": {"code": 500, "message": "insert boom"}}
+        result, _ = self._run_create(move_error, content="# body", insert_resp=insert_error)
+        self.assertEqual(result.get("status"), "created_but_move_and_content_failed")
+        self.assertIn("error", result)
+        self.assertIn("moveError", result)
+
+    def test_content_failure_only(self):
+        insert_error = {"error": {"code": 500, "message": "insert boom"}}
+        result, _ = self._run_create({"id": "d1"}, content="# body", insert_resp=insert_error)
+        self.assertEqual(result.get("status"), "created_but_content_failed")
+        self.assertIn("insert boom", result.get("error", ""))
+
+
+class TestAuthRobustness(unittest.TestCase):
+    """#423: auth failures must raise (killing one tool call), never sys.exit
+    (which killed the whole MCP server); curl/gcloud get hard timeouts; the ADC
+    token is cached; 429s are retried with backoff."""
+
+    def setUp(self):
+        auth.clear_token_cache()
+
+    def tearDown(self):
+        auth.clear_token_cache()
+
+    @staticmethod
+    def _completed(returncode=0, stdout="", stderr=""):
+        from unittest.mock import MagicMock
+        m = MagicMock()
+        m.returncode = returncode
+        m.stdout = stdout
+        m.stderr = stderr
+        return m
+
+    def test_get_token_failure_raises_instead_of_exiting(self):
+        """A transient gcloud failure must not kill the server process."""
+        with patch("auth.find_gcloud", return_value="/usr/bin/gcloud"), \
+             patch("auth.subprocess.run", return_value=self._completed(returncode=1, stderr="no creds")):
+            try:
+                auth.get_token()
+                self.fail("expected an exception")
+            except SystemExit:
+                self.fail("get_token must raise, not sys.exit — sys.exit kills the MCP server")
+            except RuntimeError as e:
+                self.assertIn("gcloud", str(e))
+
+    def test_find_gcloud_missing_raises_instead_of_exiting(self):
+        with patch("auth.shutil.which", return_value=None), \
+             patch("auth.os.path.exists", return_value=False):
+            try:
+                auth.find_gcloud()
+                self.fail("expected an exception")
+            except SystemExit:
+                self.fail("find_gcloud must raise, not sys.exit")
+            except RuntimeError as e:
+                self.assertIn("gcloud", str(e))
+
+    def test_get_token_timeout_raises_runtime_error(self):
+        import subprocess as sp
+        with patch("auth.find_gcloud", return_value="/usr/bin/gcloud"), \
+             patch("auth.subprocess.run", side_effect=sp.TimeoutExpired(cmd="gcloud", timeout=30)):
+            with self.assertRaises(RuntimeError):
+                auth.get_token()
+
+    def test_get_token_is_cached(self):
+        """One gcloud subprocess per TTL window, not one per API call (#423)."""
+        with patch("auth.find_gcloud", return_value="/usr/bin/gcloud"), \
+             patch("auth.subprocess.run", return_value=self._completed(stdout="tok-1\n")) as mock_run:
+            self.assertEqual(auth.get_token(), "tok-1")
+            self.assertEqual(auth.get_token(), "tok-1")
+            self.assertEqual(mock_run.call_count, 1)
+
+    def test_get_token_failure_is_not_cached(self):
+        with patch("auth.find_gcloud", return_value="/usr/bin/gcloud"), \
+             patch("auth.subprocess.run", return_value=self._completed(returncode=1)) as mock_run:
+            with self.assertRaises(RuntimeError):
+                auth.get_token()
+            mock_run.return_value = self._completed(stdout="tok-2\n")
+            self.assertEqual(auth.get_token(), "tok-2")
+            self.assertEqual(mock_run.call_count, 2)
+
+    def test_api_curl_includes_timeout_flags(self):
+        with patch("auth.get_token", return_value="tok"), \
+             patch("auth.subprocess.run", return_value=self._completed(stdout='{"ok": true}')) as mock_run:
+            auth.api("GET", "https://example.com/x")
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("--max-time", cmd)
+        self.assertIn("--connect-timeout", cmd)
+        self.assertIsNotNone(mock_run.call_args.kwargs.get("timeout"),
+                             "subprocess.run must carry a hard timeout backstop")
+
+    def test_api_curl_timeout_raises_runtime_error(self):
+        import subprocess as sp
+        with patch("auth.get_token", return_value="tok"), \
+             patch("auth.subprocess.run", side_effect=sp.TimeoutExpired(cmd="curl", timeout=1)):
+            with self.assertRaises(RuntimeError):
+                auth.api("GET", "https://example.com/x")
+
+    def test_api_retries_429_with_backoff_then_succeeds(self):
+        rate_limited = self._completed(stdout=json.dumps(
+            {"error": {"code": 429, "message": "Rate limit exceeded"}}))
+        ok = self._completed(stdout=json.dumps({"replies": []}))
+        with patch("auth.get_token", return_value="tok"), \
+             patch("auth.time.sleep") as mock_sleep, \
+             patch("auth.subprocess.run", side_effect=[rate_limited, ok]) as mock_run:
+            resp = auth.api("POST", "https://example.com/x", {"requests": []})
+        self.assertEqual(resp, {"replies": []})
+        self.assertEqual(mock_run.call_count, 2)
+        mock_sleep.assert_called()
+
+    def test_api_gives_up_after_max_attempts_and_returns_429_envelope(self):
+        """After exhausting retries the 429 envelope is RETURNED (visible to the
+        insert path, which now raises on it) — not swallowed."""
+        rate_limited = self._completed(stdout=json.dumps(
+            {"error": {"code": 429, "message": "Rate limit exceeded"}}))
+        with patch("auth.get_token", return_value="tok"), \
+             patch("auth.time.sleep"), \
+             patch("auth.subprocess.run", return_value=rate_limited) as mock_run:
+            resp = auth.api("POST", "https://example.com/x", {"requests": []})
+        self.assertEqual(resp.get("error", {}).get("code"), 429)
+        self.assertEqual(mock_run.call_count, auth.API_MAX_ATTEMPTS)
+
+    def test_api_non_429_error_is_returned_without_retry(self):
+        err = self._completed(stdout=json.dumps({"error": {"code": 400, "message": "bad"}}))
+        with patch("auth.get_token", return_value="tok"), \
+             patch("auth.time.sleep") as mock_sleep, \
+             patch("auth.subprocess.run", return_value=err) as mock_run:
+            resp = auth.api("GET", "https://example.com/x")
+        self.assertEqual(resp.get("error", {}).get("code"), 400)
+        self.assertEqual(mock_run.call_count, 1)
+        mock_sleep.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHouseStyle(unittest.TestCase):
+    """#2001: the renderer emits structure only. Paragraphs set just their named
+    style (spacing, fonts and sizes come from the named styles the normalize pass
+    pins), blank markdown lines survive between prose blocks but never next to a
+    heading, code is Courier New at the inherited size, and table headers are
+    bold + tinted + vertically centred. No presets, no knobs."""
+
+    def _reqs(self, mock_api):
+        out = []
+        for call in mock_api.call_args_list:
+            if call[0][0] == "POST":
+                out.extend(call[0][2]["requests"])
+        return out
+
+    def _para_styles(self, reqs):
+        return [r["updateParagraphStyle"] for r in reqs if "updateParagraphStyle" in r]
+
+    def test_blank_line_becomes_one_empty_paragraph(self):
+        """A blank markdown line is preserved as exactly one empty NORMAL_TEXT paragraph."""
+        from markdown_render import _insert_markdown
+
+        with patch("auth.api") as mock_api:
+            mock_api.return_value = {}
+            _insert_markdown("doc1", "One.\n\nTwo.\n")
+        texts = [r["insertText"]["text"] for r in self._reqs(mock_api) if "insertText" in r]
+        self.assertEqual(texts, ["One.\n", "\n", "Two.\n"])
+
+    def test_blank_line_run_collapses_to_one(self):
+        from markdown_render import _insert_markdown
+
+        with patch("auth.api") as mock_api:
+            mock_api.return_value = {}
+            _insert_markdown("doc1", "One.\n\n\n\n\nTwo.\n")
+        texts = [r["insertText"]["text"] for r in self._reqs(mock_api) if "insertText" in r]
+        self.assertEqual(texts, ["One.\n", "\n", "Two.\n"])
+
+    def test_leading_blank_line_is_not_emitted(self):
+        from markdown_render import _insert_markdown
+
+        with patch("auth.api") as mock_api:
+            mock_api.return_value = {}
+            _insert_markdown("doc1", "\n\nOne.\n")
+        texts = [r["insertText"]["text"] for r in self._reqs(mock_api) if "insertText" in r]
+        self.assertEqual(texts, ["One.\n"])
+
+    def test_no_blank_paragraph_next_to_a_heading(self):
+        """The heading's own space-above separates sections (#2001, house_style.json)."""
+        from markdown_render import _insert_markdown
+
+        with patch("auth.api") as mock_api:
+            mock_api.return_value = {}
+            _insert_markdown("doc1", "Intro.\n\n## Section\n\nProse.\n\nMore.\n")
+        texts = [r["insertText"]["text"] for r in self._reqs(mock_api) if "insertText" in r]
+        self.assertEqual(texts, ["Intro.\n", "Section\n", "Prose.\n", "\n", "More.\n"])
+
+    def test_prose_after_a_list_keeps_its_blank_line(self):
+        """mistune folds the blank line after a list into the list token, so the
+        separator must be restored: a paragraph can only follow a list after a
+        blank line (else it would be a lazy continuation of the last item)."""
+        from markdown_render import _insert_markdown
+
+        with patch("auth.api") as mock_api:
+            mock_api.return_value = {}
+            _insert_markdown("doc1", "- a\n- b\n\nProse.\n\n1. x\n\n## H\n")
+        texts = [r["insertText"]["text"] for r in self._reqs(mock_api) if "insertText" in r]
+        self.assertEqual(texts, ["a\n", "b\n", "\n", "Prose.\n", "\n", "x\n", "H\n"])
+
+    def test_trailing_blank_line_is_not_emitted(self):
+        from markdown_render import _insert_markdown
+
+        with patch("auth.api") as mock_api:
+            mock_api.return_value = {}
+            _insert_markdown("doc1", "One.\n\n\n")
+        texts = [r["insertText"]["text"] for r in self._reqs(mock_api) if "insertText" in r]
+        self.assertEqual(texts, ["One.\n"])
+
+    def test_code_block_has_no_size_or_shading(self):
+        from markdown_render import _insert_markdown
+
+        with patch("auth.api") as mock_api:
+            mock_api.return_value = {}
+            _insert_markdown("doc1", "```\nx\n```\n")
+        reqs = self._reqs(mock_api)
+        ts = [r["updateTextStyle"] for r in reqs if "updateTextStyle" in r][0]
+        self.assertNotIn("fontSize", ts["textStyle"])
+        ps = self._para_styles(reqs)[0]
+        self.assertNotIn("shading", ps["paragraphStyle"])
+
+    def _table_doc(self):
+        return {
+            "body": {"content": [
+                {"startIndex": 1, "endIndex": 20, "table": {
+                    "rows": 2, "columns": 2,
+                    "tableRows": [
+                        {"tableCells": [{"content": [{"startIndex": 3}]}, {"content": [{"startIndex": 6}]}]},
+                        {"tableCells": [{"content": [{"startIndex": 10}]}, {"content": [{"startIndex": 13}]}]},
+                    ],
+                }},
+                {"startIndex": 20, "endIndex": 21, "paragraph": {"elements": []}},
+            ]},
+        }
+
+    def _cell_styles(self, mock_api):
+        return [r["updateTableCellStyle"] for r in self._reqs(mock_api)
+                if "updateTableCellStyle" in r]
+
+    def test_table_header_tint_emitted_by_default(self):
+        from markdown_render import _insert_markdown
+
+        with patch("auth.api") as mock_api:
+            mock_api.side_effect = lambda method, url, data=None: (
+                self._table_doc() if method == "GET" else {}
+            )
+            _insert_markdown("doc1", "| A | B |\n|---|---|\n| 1 | 2 |\n")
+        tint = [c for c in self._cell_styles(mock_api) if c["fields"] == "backgroundColor"]
+        self.assertEqual(len(tint), 1)
+        self.assertEqual(
+            tint[0]["tableCellStyle"]["backgroundColor"]["color"]["rgbColor"],
+            config.TABLE_HEADER_TINT_RGB,
+        )
+        self.assertEqual(tint[0]["tableRange"]["columnSpan"], 2)
+        self.assertEqual(tint[0]["tableRange"]["rowSpan"], 1)
+
+    def test_every_cell_is_vertically_centred(self):
+        """#1770: contentAlignment MIDDLE spans the WHOLE table (rowSpan = rows),
+        not just row 0 — body cells top-aligned next to a centred header read as
+        a rendering bug."""
+        from markdown_render import _insert_markdown
+
+        with patch("auth.api") as mock_api:
+            mock_api.side_effect = lambda method, url, data=None: (
+                self._table_doc() if method == "GET" else {}
+            )
+            _insert_markdown("doc1", "| A | B |\n|---|---|\n| 1 | 2 |\n")
+        mid = [c for c in self._cell_styles(mock_api) if c["fields"] == "contentAlignment"]
+        self.assertEqual(len(mid), 1)
+        self.assertEqual(mid[0]["tableCellStyle"]["contentAlignment"], "MIDDLE")
+        self.assertEqual(mid[0]["tableRange"]["rowSpan"], 2, "spans every row")
+        self.assertEqual(mid[0]["tableRange"]["columnSpan"], 2, "spans every column")
+        self.assertEqual(mid[0]["tableRange"]["tableCellLocation"]["rowIndex"], 0)
+        self.assertEqual(mid[0]["tableRange"]["tableCellLocation"]["columnIndex"], 0)
+
+    def _col_props(self, mock_api):
+        return [r["updateTableColumnProperties"] for r in self._reqs(mock_api)
+                if "updateTableColumnProperties" in r]
+
+    def test_table_columns_fill_the_text_width(self):
+        """#1770: columns are FIXED_WIDTH and sum to pageWidth - margins,
+        computed from the destination's documentStyle."""
+        from markdown_render import _insert_markdown
+
+        doc = self._table_doc()
+        doc["documentStyle"] = {
+            "pageSize": {"width": {"magnitude": 612, "unit": "PT"}},
+            "marginLeft": {"magnitude": 72, "unit": "PT"},
+            "marginRight": {"magnitude": 72, "unit": "PT"},
+        }
+        with patch("auth.api") as mock_api:
+            mock_api.side_effect = lambda method, url, data=None: (
+                doc if method == "GET" else {}
+            )
+            _insert_markdown("doc1", "| A | B |\n|---|---|\n| 1 | 2 |\n")
+        props = self._col_props(mock_api)
+        self.assertEqual(len(props), 1)
+        self.assertEqual(props[0]["columnIndices"], [0, 1])
+        self.assertEqual(props[0]["tableColumnProperties"]["widthType"], "FIXED_WIDTH")
+        self.assertEqual(props[0]["fields"], "widthType,width")
+        width = props[0]["tableColumnProperties"]["width"]["magnitude"]
+        self.assertEqual(width * 2, 468, "Letter, 1in margins -> 468pt text width")
+
+    def test_table_width_is_computed_not_hard_coded(self):
+        """Different margins must yield a different width — the whole point of
+        reading documentStyle rather than pinning 468pt."""
+        from markdown_render import _insert_markdown
+
+        doc = self._table_doc()
+        doc["documentStyle"] = {
+            "pageSize": {"width": {"magnitude": 595, "unit": "PT"}},   # A4
+            "marginLeft": {"magnitude": 36, "unit": "PT"},
+            "marginRight": {"magnitude": 54, "unit": "PT"},
+        }
+        with patch("auth.api") as mock_api:
+            mock_api.side_effect = lambda method, url, data=None: (
+                doc if method == "GET" else {}
+            )
+            _insert_markdown("doc1", "| A | B |\n|---|---|\n| 1 | 2 |\n")
+        width = self._col_props(mock_api)[0]["tableColumnProperties"]["width"]["magnitude"]
+        self.assertEqual(width * 2, 595 - 36 - 54)
+
+    def test_table_width_falls_back_when_no_document_style(self):
+        """A destination that reports no documentStyle still gets a full-width
+        table, at the Letter/1in default."""
+        from markdown_render import _insert_markdown
+
+        with patch("auth.api") as mock_api:
+            mock_api.side_effect = lambda method, url, data=None: (
+                self._table_doc() if method == "GET" else {}
+            )
+            _insert_markdown("doc1", "| A | B |\n|---|---|\n| 1 | 2 |\n")
+        width = self._col_props(mock_api)[0]["tableColumnProperties"]["width"]["magnitude"]
+        self.assertEqual(width * 2, config.FALLBACK_TEXT_WIDTH_PT)
+
+    def test_cell_paragraphs_carry_no_paragraph_style(self):
+        """Cell paragraphs inherit the pinned NORMAL_TEXT style (#2001)."""
+        from markdown_render import _insert_markdown
+
+        with patch("auth.api") as mock_api:
+            mock_api.side_effect = lambda method, url, data=None: (
+                self._table_doc() if method == "GET" else {}
+            )
+            _insert_markdown("doc1", "| A | B |\n|---|---|\n| 1 | 2 |\n")
+        self.assertEqual(self._para_styles(self._reqs(mock_api)), [])
+
+    def test_paragraphs_set_only_their_named_style(self):
+        """No #1768 rhythm: nothing but namedStyleType (plus the quote's indent and
+        border) is pinned, so every paragraph inherits the pinned named styles."""
+        from markdown_render import _insert_markdown
+
+        with patch("auth.api") as mock_api:
+            mock_api.return_value = {}
+            _insert_markdown("doc1", "# H\n\nProse.\n\n- a\n\n> q\n\n```\nx\n```\n")
+        styles = self._para_styles(self._reqs(mock_api))
+        self.assertGreaterEqual(len(styles), 4)
+        for ps in styles:
+            for field in ("lineSpacing", "spaceAbove", "spaceBelow", "spacingMode"):
+                self.assertNotIn(field, ps["paragraphStyle"])
+                self.assertNotIn(field, ps["fields"].split(","))
+            self.assertIn("namedStyleType", ps["fields"].split(","))
+
+    def test_no_blank_paragraph_precedes_a_table(self):
+        """PAIN-004: the blank markdown line before a table is suppressed, so the grid
+        gets exactly the one empty paragraph Docs' insertTable creates."""
+        from markdown_render import _insert_markdown
+
+        with patch("auth.api") as mock_api:
+            mock_api.side_effect = lambda method, url, data=None: (
+                self._table_doc() if method == "GET" else {}
+            )
+            _insert_markdown("doc1", "Intro.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n")
+        texts = [r["insertText"]["text"] for r in self._reqs(mock_api) if "insertText" in r]
+        self.assertEqual(texts[0], "Intro.\n")
+        self.assertNotIn("\n", texts[1:2], "no empty paragraph may sit between prose and the table")
+
+    def test_block_quote_gets_indent_and_left_border(self):
+        """PAIN-003: block quotes are visually quoted — indented with a grey left rule."""
+        from markdown_render import _insert_markdown
+
+        with patch("auth.api") as mock_api:
+            mock_api.return_value = {}
+            _insert_markdown("doc1", "> quoted line\n")
+        quoted = [ps for ps in self._para_styles(self._reqs(mock_api))
+                  if "borderLeft" in ps["paragraphStyle"]]
+        self.assertEqual(len(quoted), 1)
+        body = quoted[0]["paragraphStyle"]
+        self.assertEqual(body["indentStart"], {"magnitude": config.BLOCK_QUOTE_INDENT_PT, "unit": "PT"})
+        self.assertEqual(body["borderLeft"], config.BLOCK_QUOTE_BORDER)
+        self.assertIn("borderLeft", quoted[0]["fields"])
+        italics = [r["updateTextStyle"] for r in self._reqs(mock_api) if "updateTextStyle" in r]
+        self.assertTrue(any(t["textStyle"].get("italic") for t in italics))
+
+    def test_code_runs_are_courier_new_at_the_inherited_size(self):
+        """PAIN-006 (deferred shading/size): code keeps the house mono font only."""
+        from markdown_render import _insert_markdown
+
+        with patch("auth.api") as mock_api:
+            mock_api.return_value = {}
+            _insert_markdown("doc1", "```sql\nSELECT 1;\n```\n")
+        ts = [r["updateTextStyle"] for r in self._reqs(mock_api) if "updateTextStyle" in r][0]
+        self.assertEqual(ts["textStyle"]["weightedFontFamily"]["fontFamily"], config.CODE_FONT)
+        self.assertNotIn("fontSize", ts["textStyle"])
+
+    def test_quote_bullet_clear_precedes_the_quote_style(self):
+        """Live regression (#1768): deleteParagraphBullets resets paragraph indentation,
+        so it must run BEFORE the quote's updateParagraphStyle or the 36pt indent is lost."""
+        from markdown_render import _insert_markdown
+
+        with patch("auth.api") as mock_api:
+            mock_api.return_value = {}
+            _insert_markdown("doc1", "> quoted line\n")
+        kinds = [next(iter(r)) for r in self._reqs(mock_api)]
+        self.assertLess(kinds.index("deleteParagraphBullets"), kinds.index("updateParagraphStyle"))

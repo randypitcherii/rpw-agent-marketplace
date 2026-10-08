@@ -1,0 +1,49 @@
+# Generic private-monorepo -> published-repos fanout topology.
+# Placeholder names throughout; adapt to your own repo/package names.
+# Render:
+#   d2 --pad=24 fanout-topology.d2 /tmp/fanout-topology.svg
+#   rsvg-convert --zoom 2 --format png --output fanout-topology.png /tmp/fanout-topology.svg
+
+# ── House theme: Mono Bold. Copy verbatim. ──
+**.style: {
+  fill: "#FFFFFF"
+  stroke: "#000000"
+  stroke-width: 1
+  font-color: "#000000"
+  bold: true
+  border-radius: 4
+}
+(** -> **)[*].style: {
+  stroke: "#000000"
+  stroke-width: 1
+  font-color: "#000000"
+  bold: true
+  italic: false
+}
+
+direction: down
+
+mono: example-org/monorepo (private integration) {
+  style.border-radius: 0
+
+  core: libs/shared-core\n(canonical lib)
+  toolkit: packages/toolkit\n(publish opt-in) { style.fill: "#18FFFF" }
+  sdk: packages/sdk\n(publish opt-in) { style.fill: "#18FFFF" }
+  internal: packages/internal\n(never in any include list) { style.fill: "#F2F2F2" }
+  assets: publish-assets/*\n(target-root README + CI)
+
+  core -> toolkit: vendored
+  core -> sdk: vendored
+}
+
+filter: publish filter\npublish/<target>.yml include-list { style.fill: "#FFE066" }
+
+mono.toolkit -> filter
+mono.sdk -> filter
+mono.assets -> filter: remapped to root
+
+pr_toolkit: example-org/toolkit\nstaged PR, human merge = publish
+pr_sdk: example-org/sdk\nstaged PR, human merge = publish
+
+filter -> pr_toolkit: scanned diff
+filter -> pr_sdk: scanned diff

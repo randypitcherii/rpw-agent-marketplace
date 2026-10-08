@@ -13,6 +13,8 @@ Use when the target of the feedback is **this marketplace** — a plugin, skill,
 
 **Skip when** the feedback is about the *user's own* project (file it there with `gh` directly), or the fix is fast enough to just do inline. For analyzing plugin/project *health* (not filing feedback), use `/plugin-feedback` or `/project-feedback` instead.
 
+**Composition:** the `issue-creation` skill is the default issue-authoring path for any repo; this skill is its marketplace-scoped specialization, so within that scope the classification, labels, and body shape below win.
+
 ## Pipeline
 
 ### 1. Classify

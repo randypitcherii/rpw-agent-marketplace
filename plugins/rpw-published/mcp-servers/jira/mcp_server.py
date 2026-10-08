@@ -12,7 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from databricks.sdk.service.serving import ExternalFunctionRequestHttpMethod
 from fastmcp import FastMCP
 
+import response_shaping
 from lib import uc_proxy_client
+from lib.response_shaping import shape
 
 mcp = FastMCP(name="jira-uc-mcp")
 
@@ -44,35 +46,58 @@ def jira_search(
     jql: str,
     fields: str = "summary,status,assignee,priority,created",
     max_results: int = 25,
+    verbose: bool = False,
 ) -> str:
     """Search Jira issues with JQL (Jira Query Language).
 
     fields: comma-separated field list (e.g. 'summary,status,assignee'). Use '*all' for everything.
     max_results: clamped to 1..100.
+    verbose: return Jira's raw response instead of the projected one.
+
+    Every field you request is returned, including nulls — only Jira's own REST
+    plumbing is stripped: `self` links, `expand`, `iconUrl`/`avatarUrls` sets, and
+    the `statusCategory` rollup that restates `status.name`. That plumbing was
+    ~30% of a measured 43 KB response over 30 issues; `fields.status` alone cost
+    13.7 KB to say "Open" (#828). Paging is carried through as `next_page_token`
+    and `is_last`.
     """
     field_list = (
         [f.strip() for f in fields.split(",") if f.strip()]
         if fields and fields != "*all"
         else ["*all"]
     )
-    return uc_proxy_client.request_via_env(
-        ExternalFunctionRequestHttpMethod.POST,
-        "search/jql",
-        json_body={
-            "jql": jql,
-            "fields": field_list,
-            "maxResults": min(max(max_results, 1), 100),
-        },
+    return shape(
+        uc_proxy_client.request_via_env(
+            ExternalFunctionRequestHttpMethod.POST,
+            "search/jql",
+            json_body={
+                "jql": jql,
+                "fields": field_list,
+                "maxResults": min(max(max_results, 1), 100),
+            },
+        ),
+        response_shaping.shape_search,
+        verbose=verbose,
     )
 
 
 @mcp.tool
-def jira_get_issue(key: str, fields: str = "*all") -> str:
-    """Get a Jira issue by key (e.g. ABC-123). fields is comma-separated; default '*all'."""
-    return uc_proxy_client.request_via_env(
-        ExternalFunctionRequestHttpMethod.GET,
-        f"issue/{key}",
-        query_params={"fields": fields},
+def jira_get_issue(key: str, fields: str = "*all", verbose: bool = False) -> str:
+    """Get a Jira issue by key (e.g. ABC-123). fields is comma-separated; default '*all'.
+
+    verbose: return Jira's raw response instead of the projected one. The same
+    REST plumbing `jira_search` strips is stripped here; with the default
+    `fields="*all"` this is the largest single-issue payload the server can
+    return (#828).
+    """
+    return shape(
+        uc_proxy_client.request_via_env(
+            ExternalFunctionRequestHttpMethod.GET,
+            f"issue/{key}",
+            query_params={"fields": fields},
+        ),
+        response_shaping.shape_issue,
+        verbose=verbose,
     )
 
 

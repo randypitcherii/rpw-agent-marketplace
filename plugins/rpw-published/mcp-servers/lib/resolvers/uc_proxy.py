@@ -25,6 +25,15 @@ unparseable, so every pre-existing HTTP_PROXY server keeps its exact behavior.
 Note: request routing is driven by the SDK `conn=` argument, not UC_PROXY_URL —
 UC_PROXY_URL only supplies the workspace host for reauth URLs — so this reshaping
 is backward-compatible for servers that call `serving_endpoints.http_request`.
+
+Startup note: the fresh path shells out to the ``databricks`` CLI up
+to three times for connection metadata, current user, and credential checks.
+A short-TTL on-disk cache (``lib.resolution_cache``) replays the exported env
+vars when a fresh resolution for the same (connection, profile) exists, skipping
+all three shell-outs; any miss/expiry/corruption falls through unchanged. A
+credential that goes stale *inside* the TTL surfaces at request time as the
+actionable ``uc_oauth_reauthentication_required`` envelope from
+``lib.uc_proxy_client``, and the first post-TTL startup re-verifies for real.
 """
 
 import json
@@ -32,11 +41,13 @@ import os
 import subprocess
 from datetime import datetime, timezone
 
-from lib import databricks_auth
+from lib import databricks_auth, resolution_cache
 from lib.errors import (
     CredentialResolutionError,
     uc_connection_not_authorized,
 )
+
+_CACHE_KIND = "uc_proxy"
 
 
 def _parse_expiration(value: str | None) -> datetime | None:
@@ -141,6 +152,20 @@ def resolve(
         connection_name: UC connection name (e.g. "slack", "system_ai_agent_glean_mcp").
         databricks_profile: Databricks CLI profile to use.
     """
+    identity = {"connection_name": connection_name, "profile": databricks_profile}
+    cached = resolution_cache.load(_CACHE_KIND, identity)
+    if cached is not None:
+        flavor = cached.get("flavor")
+        url = cached.get("url")
+        if flavor in ("mcp_native", "http_proxy") and isinstance(url, str) and url:
+            os.environ["UC_PROXY_CONNECTION_NAME"] = connection_name
+            os.environ["UC_PROXY_PROFILE"] = databricks_profile
+            os.environ["UC_PROXY_FLAVOR"] = flavor
+            os.environ["UC_PROXY_URL"] = url
+            return
+        # Unusable cached shape — drop it and resolve fresh (fail safe).
+        resolution_cache.invalidate(_CACHE_KIND, identity)
+
     # Validate: fetch connection metadata to confirm user has USE_CONNECTION privilege.
     result = subprocess.run(
         [
@@ -172,10 +197,14 @@ def resolve(
     os.environ["UC_PROXY_CONNECTION_NAME"] = connection_name
     os.environ["UC_PROXY_PROFILE"] = databricks_profile
     if _is_mcp_native(result.stdout):
-        os.environ["UC_PROXY_FLAVOR"] = "mcp_native"
-        os.environ["UC_PROXY_URL"] = f"{host}/api/2.0/mcp/external/{connection_name}"
+        flavor = "mcp_native"
+        url = f"{host}/api/2.0/mcp/external/{connection_name}"
     else:
-        os.environ["UC_PROXY_FLAVOR"] = "http_proxy"
-        os.environ["UC_PROXY_URL"] = (
-            f"{host}/api/2.0/unity-catalog/connections/{connection_name}/proxy/"
-        )
+        flavor = "http_proxy"
+        url = f"{host}/api/2.0/unity-catalog/connections/{connection_name}/proxy/"
+    os.environ["UC_PROXY_FLAVOR"] = flavor
+    os.environ["UC_PROXY_URL"] = url
+
+    # Cache only after the full fresh path (privilege check + ACTIVE credential
+    # verification) succeeded. The payload holds no secrets — just routing shape.
+    resolution_cache.store(_CACHE_KIND, identity, {"flavor": flavor, "url": url})

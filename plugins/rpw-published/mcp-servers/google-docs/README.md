@@ -20,19 +20,19 @@ MCP server for Google Docs CRUD, tabs (including nested subtabs), find/replace, 
    # Edit each file with environment-specific values
    ```
 
-3. **Authenticate**:
+3. **Authenticate and validate the shared ADC grant**:
 
    ```bash
-   gcloud auth application-default login \
-     --scopes=https://www.googleapis.com/auth/documents,https://www.googleapis.com/auth/drive,https://www.googleapis.com/auth/presentations,https://www.googleapis.com/auth/spreadsheets,https://www.googleapis.com/auth/userinfo.email
+   cd "$CLAUDE_PLUGIN_ROOT/skills/mcp-setup"
+   uv run python google_adc.py
    ```
 
-   The `spreadsheets` scope powers the Sheets tools (#197). The broader `drive`
-   scope already covers the Sheets API for most grants, so an existing token may
-   keep working — but a narrowly-scoped grant (or one predating #197) needs this
-   re-auth. Re-running `application-default login` **replaces** the ADC scope set,
-   so include the full list above (dropping a scope silently breaks the tools that
-   need it — see #74).
+   `server_registry.py` is the canonical scope source for all ADC-backed Google
+   MCP servers. If validation reports missing scopes, run its generated full-union
+   `gcloud auth application-default login --scopes=...` command. That command
+   includes identity, Vertex, Drive, Docs, Sheets, Slides, and Tasks scopes.
+   Re-running `application-default login --scopes=...` **replaces** the ADC scope
+   set, so never substitute a Docs-only list.
 
 ## Run
 
@@ -84,6 +84,7 @@ Or register using `google_docs.mcp.json` — merge the `mcpServers` block. For m
 | `gdocs_insert_person` | Insert person chip (@mention) |
 | `gdocs_upload_image` | Upload local image to Drive (co-located with doc) and grant public read access |
 | `gdocs_insert_image` | Insert inline image into a specific tab at a given index |
+| `gdocs_lint` | Check a doc (or one tab) against the house style in `house_style.json`, in code. Returns a compact summary — `ok`, error/warning counts, `by_rule`, grouped violations with two short location samples — and never the doc content. See [House style lint](#house-style-lint) |
 | `gdocs_get_image` | Fetch raw bytes of an inline image (base64 + mimeType). Discover objectIds via `gdocs_read` placeholders |
 
 ### Slides tools
@@ -280,6 +281,55 @@ half-open `GridRange`. Example — bold the header row:
 The tool's decorated docstring carries more shapes (background color, freeze
 row, auto-resize columns).
 
+## House style lint
+
+`house_style.json` is the single source of style values (#2001). The values come from the
+owner's hand-built Jam Session template. Constructs the
+template does not contain (tables, code) carry forward earlier validated decisions; each
+section says which with `"source"`.
+
+`style_lint.py` is pure code over a `documents.get?includeTabsContent=true` payload. For every
+paragraph and text run it resolves the **effective** style — NORMAL_TEXT, then the paragraph's
+named style, then explicit overrides, the same cascade Docs uses — and compares it to the spec.
+So a doc passes whether its style comes from pinned named styles or from explicit values.
+
+| Rule family | Checks |
+| ----------- | ------ |
+| `page.*` | Page size and margins |
+| `named_style.*` | The doc's own NORMAL_TEXT / HEADING_1..6 / TITLE / SUBTITLE definitions (font, size, bold, colour, line spacing, space above/below) |
+| `paragraph.*` | Effective line spacing, space above and space below of every paragraph, table cells included |
+| `run.*` | Effective font family (house font or an allowed code font), size, heading bold, heading colour |
+| `list.*` | Unordered glyph `-` (**warning**: the API cannot create dash lists) and the 36pt indent ladder with an 18pt hanging indent |
+| `blank.*` | More than one consecutive blank paragraph, or a blank paragraph next to a heading. The tab-end anchor is ignored |
+| `table.*` | Every cell vertically centred, bold header row, total width equal to the text width |
+
+`ok` is false only on errors. Output is bounded (at most 10 groups, 2 samples each, locator
+snippets of 24 characters), so an agent can gate on it without reading the doc back.
+
+### Normalize, and the post-write gate
+
+`style_normalize.py` turns a `documents.get` payload into the `batchUpdate` requests that bring
+each tab to the spec. It is pure and returns requests in execution order:
+
+1. `updateNamedStyle` (tab-scoped) for every named style that differs from the spec.
+2. The linter's own traversal, run as if step 1 had already happened, so every remaining
+   violation is an explicit override. Overrides are **reset** (field in the mask, value
+   unset) so text inherits the pinned named style. List indents, table alignment, widths,
+   header bold and page setup are set explicitly.
+3. Extra blank paragraphs are deleted last, highest index first. Docs requires a paragraph
+   before a table, so that one is kept. Under a heading, the heading's newline is deleted
+   instead, which merges the heading onto it.
+
+A clean tab produces no requests, so a second normalize is a no-op.
+
+`style_gate.py` runs normalize and then lint after every successful `gdocs_create`,
+`gdocs_update` (the first tab, where the append lands), `gdocs_add_tab` (the new tab) and
+`gdocs_write_to_tab`. The result gains
+`style: {ok, errors, warnings, by_rule, samples, normalized, tabId}`. If errors remain, the
+status gets a `_but_style_check_failed` suffix and `error` is set; the content is still
+written. `gdocs_find_replace` is not gated: `replaceAllText` keeps the replaced text's style,
+and a doc-wide replace would otherwise restyle tabs the agent never wrote.
+
 ## Module Layout
 
 The server is split into focused modules (restructured from the former
@@ -299,10 +349,12 @@ The server is split into focused modules (restructured from the former
 | `slides_read.py` | `read_presentation` / `normalize_presentation_id` — Slides read-path (shape/table/notes text extraction), used by the `gdocs_slides_*` tools |
 | `markdown_render.py` | `_insert_markdown` — markdown AST → Docs `batchUpdate` requests |
 | `markdown_inline.py` | Inline-token helpers (`_walk_inlines`, UTF-16 offsets, image detection) |
+| `style_normalize.py` | `normalize_requests` — pure `documents.get` → `batchUpdate` requests that bring a tab to `house_style.json` |
+| `style_gate.py` | Post-write gate: normalize the written tab, re-lint, attach the `style` summary / fail the result |
+| `style_lint.py` | `lint_document` — house-style check over a `documents.get` payload, driven by `house_style.json` |
 | `tabs.py` | The recursive `_find_tab_by_id` tab-tree lookup |
 | `auth.py` | gcloud ADC token + `curl`/`urllib` HTTP primitives (`api`, `multipart_upload`, `_fetch_authed_bytes`) |
 | `config.py` | Env-derived constants (`TARGET_FOLDER_ID`, `QUOTA_PROJECT`, bullet presets) |
-| `cli.py` | Standalone CLI (`create`/`list`/`read`/`update`/`delete`/`add-tab`) |
 
 ### Extensions
 
@@ -346,12 +398,16 @@ needs to populate a customer deck from a template.
 | `[text](url)` | hyperlink (blue, underlined) |
 | `` [`code`](url) `` | code hyperlink — blue + Courier New, **no** underline (underscores in code clash with it) |
 | nested inline styles | styles nested inside links/bold/italic are preserved (e.g. `` **`code`** `` is bold monospace, `` [**`x`**](url) `` is a bold-mono link) |
-| `- item` / `* item` (unordered list) | `BULLET_DISC_CIRCLE_SQUARE` bullets by default; override per-call via `gdocs_write_to_tab(..., bullet_preset=...)`. `NORMAL_TEXT` paragraph style |
+| `- item` / `* item` (unordered list) | `BULLET_ARROW_DIAMOND_DISC` bullets (`➔ / ◆ / ●`), `NORMAL_TEXT` paragraph style, 36pt indent per level |
 | `1. item` (ordered list) | `NUMBERED_DECIMAL_ALPHA_ROMAN` bullets, `NORMAL_TEXT` paragraph style |
 | `` ``` `` fenced code blocks | Courier New font, no backtick markers |
-| `> blockquote` | italic paragraph (Docs has no native blockquote) |
+| `> blockquote` | italic paragraph, 36pt indent, grey left border (Docs has no native blockquote) |
 | `---` horizontal rule | line of `─` box-drawing characters |
-| `\| H1 \| H2 \|` tables | real Docs table (`insertTable`), header row bolded |
+| `\| H1 \| H2 \|` tables | real Docs table (`insertTable`), every cell vertically centred, columns split evenly across the destination's text width (`pageSize.width - marginLeft - marginRight`, `FIXED_WIDTH`), header row bolded + grey-tinted |
+
+The renderer emits structure only: each paragraph sets just its named style, and spacing, fonts and sizes come from the named styles that the post-write normalize pass pins (#2001, see [House style lint](#house-style-lint)). Blank markdown lines survive as one empty paragraph between prose blocks, but never next to a heading, whose own space-above separates sections. There are no style presets and no per-call font/bullet knobs: one user, one house style.
+
+**Dash (`-`) bullets are not reachable and never will be over `batchUpdate`.** Hand-typed tabs use dashes, but the API exposes no dash glyph: none of the 16 `BulletGlyphPreset` values renders `-`, `Bullet.listId` is read-only, and no request in the 40-request write surface defines a list glyph. The one mechanism that *does* inherit `-` — splitting a paragraph that already belongs to a dash list — needs a dash list inside the very paragraph being written, which a freshly added tab never has (list definitions are per-tab). The renderer therefore uses `BULLET_ARROW_DIAMOND_DISC` (`➔ / ◆ / ●`), the closest horizontally-oriented preset. Full probe record with exact requests and errors: `docs/research/2026-09-13-gdocs-dash-bullets.md` (#1770).
 
 > **Note**: Tables use the documented two-phase `insertTable` → `documents.get` → reverse-order cell `insertText` pattern. Header row cells receive `updateTextStyle.bold` in the same batch as cell fills. Inline formatting inside cells (bold/italic/code/links, including nested styles such as a code link) is rendered via the same `_walk_inlines` path as body paragraphs.
 
@@ -378,7 +434,31 @@ The Slides template-fill tools (#196) are covered by `test_slides_write_tools.py
 single `policy.api` patch point, plus read-only and allow-list gating on the
 writes. Fully mocked; runs in the gate.
 
+The house style is covered by `test_style_lint.py` (each rule, output bounds, the
+`gdocs_lint` tool), `test_style_normalize.py` (request shape, ranges and ordering for every
+repair, over index-bearing synthetic payloads) and `test_style_gate.py` (normalize → re-lint
+over a fake API, batching, failure envelopes, and which tools gate which tab). Fully
+mocked; all run in the gate (`make verify-mcp-gstyle`).
+
 The Sheets tools are covered by `test_google_sheets_mcp.py` — the `sheets_ops`
 ID/URL normalizer + A1 range encoder, and every `gsheets_*` tool: request
 shaping (method/URL/query/body) via the single `policy.api` patch point, plus
 read-only and allow-list gating on the writes. Fully mocked; runs in the gate.
+
+### Live integration tier (manual, never in the gate)
+
+`live_test_rich_content.py` (#298) hits the real Docs/Drive APIs with your
+gcloud ADC credentials: it auto-creates a scratch doc, runs the rich-content
+round-trip (clear tab → nested list + table + inline image → `gdocs_read`
+structure assertions, including content landing *after* the table/image),
+verifies `gdocs_get_image` returns real fetchable bytes, exercises a nested
+sub-tab write/read (recursive tab lookup + per-tab `inlineObjects` collection),
+and trashes the scratch doc afterward. The `live_test_*.py` name keeps it out
+of every automatic discovery path (the gate's explicit `-p` patterns, unittest's
+`test*.py` default, pytest's `test_*.py` / `*_test.py`) — CI could not reach
+Google anyway (workspace IP ACL). Run it manually:
+
+```bash
+uv run --with fastmcp --with mistune --with python-dotenv \
+    python -m unittest live_test_rich_content -v
+```

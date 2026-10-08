@@ -5,17 +5,11 @@ description: End-to-end MCP server setup — diagnoses servers, bootstraps gclou
 
 # MCP Setup
 
-Unified setup for all MCP servers in this marketplace. Configures credentials once and leaves no secrets on disk by default — per-server `dev.env` files hold pointers to Databricks UC connections, Databricks secrets scopes, or gcloud ADC, and `env_loader.py` resolves them fresh at every server startup.
+Configure all marketplace MCP servers. Per-server `dev.env` files hold pointers to UC connections, secret scopes, or gcloud ADC; `env_loader.py` resolves them at startup.
 
 ## Credential source priority
 
-For each server the skill tries these in order, using the first that's available:
-
-1. **UC connection** (shared, org-managed) — preferred when the server has a matching UC connection in the user's UC-connections workspace.
-2. **Databricks secrets** (personal) — per-user secret scope in the user's own Databricks workspace. Scope name: `<user>_rpw_mcp` where `<user>` is derived from the user's Databricks email (local-part, dots→underscores).
-3. **Manual env file** (last-resort) — user puts literal values in `dev.env`. Only used when the user explicitly declines Databricks.
-
-The authoritative mapping lives in `server_registry.py`. Each server declares an ordered `sources` list. Adding a new server: update that file.
+Use the first available source: **UC connection** (shared), **Databricks secrets** (personal `<user>_rpw_mcp`), then a manual `dev.env` only when the user declines Databricks. `server_registry.py` is authoritative; add servers there.
 
 ## Shared user-level config
 
@@ -92,9 +86,16 @@ Required: `gcloud`, `databricks`. For each missing, ask whether to install via A
 
 If the user declines a tool, skip servers that depend on it. Make skips explicit in the final report.
 
-### 3. Authenticate gcloud
+### 3. Authenticate and validate gcloud ADC scopes
 
-Check `gcloud auth application-default print-access-token 2>&1`. If it fails, confirm with the user and run `gcloud auth application-default login` (opens browser).
+ADC is separate from `gcloud auth print-access-token --account` user credentials and Databricks UC Google connections. Validate the actual ADC grant:
+
+```bash
+cd "$CLAUDE_PLUGIN_ROOT/skills/mcp-setup"
+uv run python google_adc.py
+```
+
+The validator checks granted scopes against `server_registry.py`. ADC consumers are `gemini-image`, `google-docs`, and `google-tasks`; Calendar, Gmail, and Drive use UC and are excluded. If it reports a problem, confirm before running its generated command (opens a browser). **`application-default login --scopes=...` replaces the grant**: use the full union, not a server-specific command.
 
 ### 4. Bootstrap shared Databricks config
 
@@ -110,12 +111,9 @@ Read `~/.claude/mcp-servers/.shared.env` if it exists. For any of `UC_CONNECTION
 
 ### 5. Discover available credentials
 
-Before any discovery command, re-check tokens: for `<uc-profile>` and `<secrets-profile>`, run `databricks auth env --profile <p> 2>&1`. If output contains `invalid`/`not found`/`expired`/`Refresh token is invalid`, re-auth with `databricks auth login --profile <p>` (confirm with user; opens browser).
+Before discovery, re-check each profile with `databricks auth env --profile <p> 2>&1`; if invalid, missing, or expired, confirm then run `databricks auth login --profile <p>`. A startup `Auth expired` message needs that command, not a full setup rerun.
 
-> The MCP servers also self-diagnose expired tokens at startup. If a user sees `❌ Auth expired for Databricks profile 'X' — run: databricks auth login --profile X` in `claude mcp list`, that single command fixes every UC-proxy server (CLI token is cached centrally). No need to re-run `/mcp-setup` for token expiry.
-
-For the UC workspace: `databricks connections list --profile <uc-profile> --output json` → list of connections.
-For the secrets workspace: `databricks secrets list-scopes --profile <secrets-profile> --output json` → list of scopes. Confirm `<SCOPE_PREFIX>_rpw_mcp` exists. If not, ask the user whether to skip the secrets fallback or create the scope (`databricks secrets create-scope <name> --profile <p>`).
+List UC connections with `databricks connections list --profile <uc-profile> --output json`; list secret scopes with `databricks secrets list-scopes --profile <secrets-profile> --output json`. Confirm `<SCOPE_PREFIX>_rpw_mcp`, or ask to create it with `databricks secrets create-scope <name> --profile <p>`.
 
 ### 6. Pick the source per server and write dev.env
 
@@ -127,7 +125,9 @@ For each server in `server_registry.py`:
 2. For a `uc_connection` source: is its `connection_name` in the UC workspace's list? If yes, select it.
 3. For a `uc_proxy` source: is its `connection_name` in the UC workspace's list AND does the user have USE_CONNECTION privilege (confirmed by a successful `databricks api get /api/2.1/unity-catalog/connections/<name> --profile <uc-profile>`)? If yes, select it.
 4. For a `databricks_secrets` source: are all keys in `secret_map` present under `<SCOPE_PREFIX>_rpw_mcp`? Run `databricks secrets list-secrets <scope> --profile <p> --output json` and check. If yes, select it.
-5. For a `gcloud_adc` source: is gcloud ADC authed? If yes, select it.
+5. For a `gcloud_adc` source: is gcloud ADC authed **and scope-complete**? Run
+   `uv run python "$CLAUDE_PLUGIN_ROOT/skills/mcp-setup/google_adc.py" --enabled-server <server>`
+   after selection; if it reports missing scopes, do not declare the server configured.
 6. If nothing resolves, ask the user whether to skip this server or use manual .env (prompt for each required env var from the server's `REQUIRED` list).
 
 Compose the dev.env contents per the "Per-server dev.env shapes" section above (using the `extra_env_prompts` values if present). Run `mkdir -p ~/.claude/mcp-servers/<server>` and write `<app_env>.env`. Before overwriting an existing file, show a diff and ask to confirm.
@@ -137,17 +137,17 @@ Compose the dev.env contents per the "Per-server dev.env shapes" section above (
 Discover the installed plugin path:
 
 ```bash
-ls -d ~/.claude/plugins/cache/rpw-agent-marketplace/rpw-{published,private}/*/mcp-servers/ 2>&1 | tail -2
+ls -d ~/.claude/plugins/cache/rpw-agent-marketplace/rpw-published/*/mcp-servers/ 2>&1 | tail -1
 ```
 
-MCP servers live under two plugin caches (`rpw-published`, `rpw-private`). If neither path ends in `/mcp-servers/`, the plugins aren't installed — report that and stop. Otherwise, for each configured server:
+If the path does not end in `/mcp-servers/`, the plugin is not installed — report that and stop. Otherwise, run each configured server from its discovered directory with a **3-second subprocess timeout supplied by the coding harness** (do not assume GNU `timeout` exists on macOS):
 
 ```bash
 SERVER_DIR="<discovered-path>/<server>"
-(cd "$SERVER_DIR" && timeout 3 uv run python run_mcp.py 2>&1 | head -20)
+(cd "$SERVER_DIR" && uv run python run_mcp.py)
 ```
 
-Success = no `❌`, `RuntimeError`, `FileNotFoundError`, or `EnvironmentError` before the timeout. Failure = any of those appearing. Collect results. Print the final status table. Suggest restarting Claude Code so MCP servers pick up the new config.
+Success = no `❌`, `RuntimeError`, `FileNotFoundError`, or `EnvironmentError` before the harness stops the healthy stdio server at three seconds. Failure = any of those appearing. Collect results. Print the final status table. Suggest restarting Claude Code so MCP servers pick up the new config.
 
 ## Final status table format
 
@@ -164,8 +164,6 @@ Workspaces:
   ✓ Personal secrets — profile '<secrets-profile>' @ <host>, scope '<scope>'
 
 Server Setup:
-  ✓ slack                    (uc_proxy: slack)
-  ✓ glean                    (uc_proxy: system_ai_agent_glean_mcp)
   ✓ gemini-image             (gcloud_adc: Vertex AI via ADC)
   ✓ google-tasks             (gcloud_adc)
   ⚠ jira                     (no source resolved — manual .env written)
@@ -192,8 +190,9 @@ Servers self-diagnose. Their stderr (visible in `claude mcp list` and via `timeo
 
 - No secrets are written to disk unless the user explicitly chooses manual .env. If you see a literal API key in a generated dev.env, that's a bug — report it.
 - Running the skill twice is safe. It detects healthy servers and skips them.
-- `chrome-devtools` needs no setup. `exa` is registered as a URL-based MCP in `rpw-published`'s `.mcp.json` (`https://mcp.exa.ai/mcp`) and needs no credentials — the free tier covers ~1000 requests/month. See #46 if the URL entry isn't registering in `claude mcp list`.
-- All rpw servers are native FastMCP — no PEX binaries needed. `slack`, `jira`, and `google` proxy through Databricks UC connections (`slack`, `jira-mcp`, `google-mcp`); the rest use other credential sources per `server_registry.py`.
+- After setup, reconnect the one `rpw` MCP entry (`/mcp`); its `rpw_backends` tool says which servers failed and why.
+- `chrome-devtools` needs no setup. `exa` is a URL backend (`https://mcp.exa.ai/mcp`) needing no credentials; free tier ~1000 requests/month.
+- All rpw servers are native FastMCP — no PEX binaries needed. `jira` and the Google proxy servers can use Databricks UC connections (`jira-mcp`, `google-mcp`); the rest use other credential sources per `server_registry.py`.
 
 ## Verifying this skill works
 

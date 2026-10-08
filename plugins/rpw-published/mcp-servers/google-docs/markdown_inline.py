@@ -9,7 +9,7 @@ range builders, inline-token flattening, image-token detection, and the
 
 from typing import Any, Dict, List, Optional
 
-from config import DEFAULT_CODE_FONT
+from config import CODE_FONT
 
 
 def _utf16_len(text: str) -> int:
@@ -73,7 +73,7 @@ def _children_contain_image(children: List[Dict[str, Any]]) -> bool:
 
 
 def _walk_inlines(children, para_start: int, tab_id: Optional[str],
-                  code_font: str = DEFAULT_CODE_FONT, bold: bool = False) -> List[Dict]:
+                  bold: bool = False) -> List[Dict]:
     """Walk inline token list; return batchUpdate style requests with pre-computed indices.
 
     Container tokens (``strong``, ``emphasis``, ``link``) apply their own style over the
@@ -102,7 +102,7 @@ def _walk_inlines(children, para_start: int, tab_id: Optional[str],
                     "fields": "bold",
                 }
             })
-            requests.extend(_walk_inlines(token.get("children", []), start, tab_id, code_font, bold=True))
+            requests.extend(_walk_inlines(token.get("children", []), start, tab_id, bold=True))
         elif t == "emphasis":
             requests.append({
                 "updateTextStyle": {
@@ -111,14 +111,14 @@ def _walk_inlines(children, para_start: int, tab_id: Optional[str],
                     "fields": "italic",
                 }
             })
-            requests.extend(_walk_inlines(token.get("children", []), start, tab_id, code_font, bold=bold))
+            requests.extend(_walk_inlines(token.get("children", []), start, tab_id, bold=bold))
         elif t == "codespan":
             # weightedFontFamily.weight is Docs' source of truth for boldness: writing
             # a weightedFontFamily resets weight to 400 unless we say otherwise, which
             # clobbers the bold a parent strong applied (#182: **`code`** would render
             # monospace-but-NOT-bold). When nested in bold, carry weight 700 so the
             # codespan stays bold. Plain codespans keep the default 400 (normal).
-            font: Dict[str, Any] = {"fontFamily": code_font}
+            font: Dict[str, Any] = {"fontFamily": CODE_FONT}
             if bold:
                 font["weight"] = 700
             requests.append({
@@ -146,7 +146,7 @@ def _walk_inlines(children, para_start: int, tab_id: Optional[str],
                     "fields": link_fields,
                 }
             })
-            requests.extend(_walk_inlines(link_children, start, tab_id, code_font, bold=bold))
+            requests.extend(_walk_inlines(link_children, start, tab_id, bold=bold))
         # softbreak and plain text have no extra styling
 
         offset += length

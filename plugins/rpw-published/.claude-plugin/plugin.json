@@ -1,21 +1,14 @@
 {
   "name": "rpw-published",
-  "version": "2026.07.1301",
-  "description": "Publicly-shareable plugin \u2014 /build + dev tooling, /doctor setup, MCP standards, env setup, productivity skills (visualize, document-files, human-todo, superset-launch), and generic MCP servers (Google, Gemini, Jira, exa, imessage)",
+  "version": "2026.10.0811",
+  "description": "Publicly-shareable plugin \u2014 /build + dev tooling, /doctor setup, MCP standards, env setup, productivity skills (image-generation, diagram, dataviz, document-files, human-todo, dispatch-launch), and generic MCP servers (Google, Gemini, Jira, exa)",
   "author": {
-    "name": "Randy Pitcher",
-    "email": "randy.pitcher@databricks.com"
+    "name": "Randy Pitcher"
   },
   "license": "Apache-2.0",
   "skills": "./skills/",
   "commands": "./commands/",
   "mcpServers": "./.mcp.json",
-  "dependencies": [
-    {
-      "name": "chrome-devtools-mcp",
-      "marketplace": "claude-plugins-official"
-    }
-  ],
   "hooks": {
     "SessionStart": [
       {
@@ -25,6 +18,16 @@
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-start-orient.sh",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-start-learned-skills.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-telemetry.sh start",
+            "timeout": 5
           }
         ]
       }
@@ -53,11 +56,6 @@
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/destructive-command-guard.sh",
             "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/build-compliance.sh",
-            "timeout": 5
           }
         ]
       },
@@ -77,13 +75,36 @@
         ]
       }
     ],
-    "Stop": [
+    "PostToolUse": [
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/skill-telemetry.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/build-completion-gate.sh",
-            "timeout": 10
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-telemetry.sh end",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-telemetry.sh precompact",
+            "timeout": 5
           }
         ]
       }
