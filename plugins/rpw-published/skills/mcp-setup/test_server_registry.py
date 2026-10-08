@@ -78,9 +78,7 @@ class TestServerRegistrySchema(unittest.TestCase):
 
     def test_expected_servers_present(self):
         expected = {
-            "slack",
             "jira",
-            "glean",
             "gemini-image",
             "google-drive",
             "google-gmail",
@@ -137,3 +135,42 @@ class TestServerRegistrySchema(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGoogleAdcScopeRegistry(unittest.TestCase):
+    def test_full_union_is_the_validated_eight_scope_inventory(self):
+        from server_registry import GOOGLE_ADC_SCOPES, adc_scope_union
+
+        self.assertEqual(
+            set(adc_scope_union()),
+            {
+                "openid",
+                "https://www.googleapis.com/auth/userinfo.email",
+                "https://www.googleapis.com/auth/cloud-platform",
+                "https://www.googleapis.com/auth/drive",
+                "https://www.googleapis.com/auth/documents",
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/presentations",
+                "https://www.googleapis.com/auth/tasks",
+            },
+        )
+        for consumer, requirement in GOOGLE_ADC_SCOPES.items():
+            self.assertEqual(requirement["credential_source"], "gcloud_adc", consumer)
+            self.assertTrue(requirement["scopes"], consumer)
+
+    def test_each_gcloud_adc_server_has_a_scope_declaration(self):
+        from server_registry import GOOGLE_ADC_SCOPES
+
+        adc_servers = {
+            name
+            for name, entry in SERVERS.items()
+            if any(source["type"] == "gcloud_adc" for source in entry["sources"])
+        }
+        self.assertTrue(adc_servers.issubset(GOOGLE_ADC_SCOPES))
+
+    def test_uc_google_consumers_do_not_enter_adc_union(self):
+        from server_registry import GOOGLE_ADC_SCOPES
+
+        for name in ("google-calendar", "google-gmail", "google-drive"):
+            self.assertNotIn(name, GOOGLE_ADC_SCOPES)
+            self.assertEqual(SERVERS[name]["sources"][0]["type"], "uc_proxy")

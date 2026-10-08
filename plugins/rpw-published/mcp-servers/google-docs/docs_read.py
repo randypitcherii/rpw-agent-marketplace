@@ -14,14 +14,18 @@ import config
 
 
 def list_docs() -> List[Dict]:
-    """List all Google Docs in the target folder."""
-    if not config.TARGET_FOLDER_ID:
-        raise RuntimeError(
-            "GDOCS_TARGET_FOLDER_ID is not set — set the env var or use run_mcp.py for env-file resolution"
-        )
+    """List Google Docs — scoped to the target folder when one is configured.
+
+    GDOCS_TARGET_FOLDER_ID is optional: when set, listing is scoped to that
+    folder; when unset, this lists the user's 50 most recently modified Docs
+    across Drive.
+    """
+    query = "mimeType='application/vnd.google-apps.document'+and+trashed=false"
+    if config.TARGET_FOLDER_ID:
+        query = f"'{config.TARGET_FOLDER_ID}'+in+parents+and+{query}"
     url = (
         f"https://www.googleapis.com/drive/v3/files"
-        f"?q='{config.TARGET_FOLDER_ID}'+in+parents+and+mimeType='application/vnd.google-apps.document'+and+trashed=false"
+        f"?q={query}"
         f"&fields=files(id,name,modifiedTime,webViewLink)"
         f"&orderBy=modifiedTime+desc"
         f"&pageSize=50"

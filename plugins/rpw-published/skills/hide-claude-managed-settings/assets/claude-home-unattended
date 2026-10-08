@@ -1,0 +1,12 @@
+#!/bin/zsh
+# claude-home for host-spawned (unattended) sessions: same Seatbelt sandbox,
+# plus the tmux watcher that answers every blocking dialog Claude Code can put on
+# the pane — the startup "Settings Error" one (#1777) and a tool-permission prompt
+# at any later minute (#1794). The watcher lives as long as the session and re-arms
+# after each dismissal; each press is logged to $CLAUDE_HOME_DISMISS_LOG (default
+# ~/.claude-home/auto-dismiss.log). Point Omnigent at THIS binary
+# (~/.omnigent/config.yaml -> harness.claude-native.command) so runner-launched
+# panes never block on a dialog nobody can see. Interactive `claude-home`
+# stays opt-in: you can read those dialogs yourself.
+export CLAUDE_HOME_AUTO_DISMISS=1
+exec "${CLAUDE_HOME_BIN:-$HOME/.local/bin/claude-home}" "$@"

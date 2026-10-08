@@ -17,7 +17,7 @@ into the release log and the publish PR on the mirror.
 Trigger on: "draft the release notes", "what changed since the last release",
 "write the changelog", "generate the release-log entry", "summarize this
 release". Also use it as the drafting step before tagging a release
-(`make tag-release`) and opening the publish PR (`make publish-public`).
+(`make tag-release`) and opening a target promotion PR (`make publish-promote TARGET=… DESCRIPTION=…`).
 
 ## The tool
 
@@ -65,7 +65,7 @@ so it composes with the release automation instead of competing with it.
    prepends newest-first under the `## Releases` header.
 2. **PR / release description body** — grouped by change type with scope tags
    and preserved PR/issue refs. Paste into the publish PR opened on the mirror
-   by `make publish-public` (or the GitHub release notes).
+   by `make publish-promote` (or the GitHub release notes).
 
 ## Workflow
 
@@ -83,6 +83,6 @@ so it composes with the release automation instead of competing with it.
   otherwise leave as a placeholder.
 - Feeds the single-branch release flow (ADR-2026-05-19, amended by #314): tag
   the release on `production` with `make tag-release`, then open the reviewable
-  mirror PR with `make publish-public`.
+  target promotion PR with `make publish-promote TARGET=… DESCRIPTION=…`.
 - Pairs with `versioning-standards` (version identity) and the release Makefile
-  targets (`tag-release`, `publish-public`).
+  targets (`tag-release`, `publish-promote`).

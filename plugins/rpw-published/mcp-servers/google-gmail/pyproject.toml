@@ -1,6 +1,6 @@
 [project]
 name = "google-gmail-uc-mcp"
-version = "0.1.0"
+version = "2026.09.0203"
 description = "FastMCP server for Gmail via Databricks UC google-mcp connection (http_request)"
 requires-python = ">=3.10"
 dependencies = [

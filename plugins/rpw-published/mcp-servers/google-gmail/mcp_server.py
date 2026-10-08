@@ -26,7 +26,7 @@ mcp = FastMCP(name="google-gmail-uc-mcp")
 
 @mcp.tool
 def google_gmail_search(query: str, max_results: int = 25) -> str:
-    """Search Gmail messages with Gmail search syntax (e.g. "from:foo@bar.com newer_than:7d").
+    """Search Gmail messages with Gmail search syntax (e.g. "from:sender@example.com newer_than:7d").
 
     Returns message id/threadId pairs only — call google_gmail_get_message for details.
     max_results clamped to 1..100.

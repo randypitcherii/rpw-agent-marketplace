@@ -1,6 +1,6 @@
 [project]
 name = "google-drive-uc-mcp"
-version = "0.1.0"
+version = "2026.09.1707"
 description = "FastMCP server for Google Drive via Databricks UC google-mcp connection (http_request)"
 requires-python = ">=3.10"
 dependencies = [

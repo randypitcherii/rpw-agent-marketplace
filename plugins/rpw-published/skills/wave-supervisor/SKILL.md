@@ -1,97 +1,78 @@
 ---
 name: wave-supervisor
-description: Supervise a multi-issue wave — batch-dispatch backlog issues to parallel workers in superset workspaces, monitor liveness, serialize merges through a wave branch, and report until the list or backlog is done. Trigger on "run a wave", "dispatch a wave of issues", "batch-dispatch these issues", "work the backlog in parallel", "run through the backlog", "supervise the wave", "merge the wave back". NOT for a single issue (superset-launch) or subagent fan-out in one task (subagent-dispatch).
+description: Supervise an ENGINEERING BACKLOG wave in the current session; dispatch Omnigent child workers in worktrees, monitor and merge. Fresh session only by explicit request or /wave-kickoff. NOT the task board, one issue, or subagent fan-out.
 ---
 
 # Wave Supervisor
 
-Work an entire backlog slice in one session: dispatch a *wave* (one cohort of parallel workers, one per issue), supervise it, serialize the merges, and either terminate or pull the next cohort. Encodes the pattern proven across waves 1–3 (2026-06-14, 2026-07-05/06/07 — see #260 for retros) plus the 2026-07-12 design review.
+Supervise a repo's **engineering backlog** in the current session by default. Fresh wave requests make this agent the supervisor; use a separate session only by explicit request or `/wave-kickoff`.
 
-This skill is prose guidance for the host agent; executable cross-workspace orchestration is a runtime/`rpw` concern (ADR-2026-05-27). Compose over the substrate — never invent parallel mechanisms:
+**Backlog means engineering backlog, never the task board** (`human-todo`). See `docs/process/task-vocabulary.md`.
 
-| Concern | Owner |
+**This file is the decision surface; the mechanics live beside it** (#531) — open the companion at each step:
+
+| Companion | Carries |
 |---|---|
-| Spawn/rename/delete workspace mechanics, Gate vs Autonomous prompts, Step 6.5 liveness verify | `superset-launch` skill |
-| Claim coordination | `make build-honor-check ISSUE=<n>` / `make build-claim ISSUE=<n>` (#245/#246) — the ONLY claim system |
-| Worker branch topology | wave branch (below); inside `/build`, #183 |
-| Version-bump race | #210 auto-bump Action — never hand-bump `plugin.json` |
+| [`planning-defaults.md`](planning-defaults.md) | modes, width, ordering, advance, needs-input |
+| [`dispatch-mechanics.md`](dispatch-mechanics.md) | branch cut, bootability preflight, launch, worktree exclusivity, durable logs |
+| [`supervision.md`](supervision.md) | liveness model, stall triage, salvage protocol |
+| [`asking-the-user.md`](asking-the-user.md) | escalation triggers, queue-vs-ask timing, close-out asks |
+| [`worker-brief-template.md`](worker-brief-template.md) | the canonical per-worker brief (#492) |
+| [`wave-issue-template.md`](wave-issue-template.md) | the `wave`-labeled issue (#849); the ownership lease (#886/#823) |
+| [`wave-state-template.md`](wave-state-template.md) | `WAVE-STATE.md`, the wave's state of record (#569) |
+| [`wave-observability.md`](wave-observability.md) | the wave page: bring-up, port resolution, scope (#705/#1136) |
+| [`merge-and-closeout.md`](merge-and-closeout.md) | rationale, teardown, process sweep, wave-PR contract |
+| [`wave-pr-template.md`](wave-pr-template.md) | the one wave PR: body sections, metadata, status legend (#897) |
+| [`retro-miner.md`](retro-miner.md) | close-out mining lenses, issue contract, Slack digest |
 
-## Two wave modes
+**Compose over the substrate — never invent parallel mechanisms** (claims, version bumps, branch topology each have one owner): [`dispatch-mechanics.md`](dispatch-mechanics.md).
 
-Both share the same plan → dispatch → supervise → merge-back → report machinery; they differ ONLY in work source and termination.
+## Modes + defaults (override only when the user says so)
 
-1. **Bounded (pre-planned):** the user picks a fixed set of N issues up front. Terminates when the set is delivered.
-2. **Unbounded (run the backlog):** no fixed list — continuously pull the next eligible issue as capacity frees, until the slice is drained or a stop condition fires (explicit issue/PR count cap, token/time budget, or the user halting). **Eligible** = open, unclaimed (`build-honor-check` clear), and sharing no conflict surface with in-flight work.
-
-## Defaults (2026-07-12 design review — override only when the user says so)
-
-- **Wave width: 5**, and always `min(5, number of non-colliding conflict-surface groups)`. A per-wave override is a user argument, not a judgment call.
-- **Unbounded ordering: supervisor judgment**, weighing priority labels, impact, effort, complexity, and ordering benefits (e.g. land a prerequisite or repo-wide sweep before the features that build on it). State the chosen order and the one-line why in the wave plan.
-- **Advance: auto, with exception stops.** Roll into the next pull/wave without asking, posting a compact report as you go. Stop and ask ONLY on: repeated worker failures on the same issue, a merge you cannot serialize safely, budget/count caps reached, or a needs-input issue reaching the front with nothing else eligible.
-- **Needs-input issues (unbounded): queue + batch-ask.** Park them in a needs-input bucket, keep dispatching eligible work, and surface the bucket as ONE batched `AskUserQuestion` at the next report/checkpoint. Never silently skip; never idle the fleet for one ambiguous ticket.
+**Bounded** (a fixed list of issues) and **unbounded** (pull the next eligible issue until the slice drains or a stop condition fires) share the whole machinery; **wave width 5**, capped by the bootability preflight; **advance auto**, with exception stops. Eligibility, ordering, needs-input, each stop condition: [`planning-defaults.md`](planning-defaults.md).
 
 ## Pipeline
 
 ### 1. Plan the wave
 
-- Bounded: take the user's list. Unbounded: pull the top slice by the ordering judgment above.
-- **Group by conflict surface, not logical dependency** — "no logical dependency" ≠ "no shared file". Issues touching the same files/plugin manifest go to the same worker or run sequentially, never in parallel.
-- Verify claims live at dispatch time (`make build-honor-check ISSUE=<n>` per issue — orientation data is stale by definition), then claim (`make build-claim ISSUE=<n>`).
+- **Tooling preflight FIRST (REQUIRED)** — `make wave-preflight`, or `wave-mechanics.sh preflight`. A wave without atomic claims must not run. Details: [`dispatch-mechanics.md`](dispatch-mechanics.md).
+- **Bootability preflight before you size the wave (REQUIRED)** — binary presence is not readiness, and an under-strength roster is a plan-time disclosure: [`dispatch-mechanics.md`](dispatch-mechanics.md).
+- **Group by conflict surface, not logical dependency** — "no logical dependency" ≠ "no shared file". Issues touching the same files (existing or predictably created, #689) or plugin manifest share a worker or run sequentially.
+- **Three pre-dispatch questions, not one** — claimed? an open PR racing it? a **merged** PR that already delivered it? Open is not evidence of undone work, and a merged hit is a read, never an auto-skip (#1846): [`delivered-but-open.md`](delivered-but-open.md). Then claim from inside the worker's worktree, so the sentinel records its branch and not yours (#568): [`dispatch-mechanics.md`](dispatch-mechanics.md).
+- **File the wave issue (REQUIRED), before cutting the branch** (#849) — one `wave`-labeled issue from [`wave-issue-template.md`](wave-issue-template.md), carrying the plan and a bare `#N` per cohort issue; `Closes` stays on the wave PR alone.
+- **Own the wave (REQUIRED), immediately after filing it** (#886) — `make wave-own ISSUE=<n> WAVE=<name>`. **Exit 3 means a different live supervisor holds it: stop, dispatch nothing, report who** — the #823 P0. Re-run `make wave-guard` before every mutation; write state via `make wave-state-append`.
+- **Gate 0 before taking over ANY existing lease (REQUIRED, #1873)** — `make wave-liveness ISSUE=<n>` must read `free` or `dead`. `wave-owner-check`'s `stale` is necessary, never sufficient: a busy supervisor goes stale exactly like a dead one. Read the verdict word, not `make`'s exit: [`wave-issue-template.md`](wave-issue-template.md).
 
-### 2. Cut the wave branch (REQUIRED)
+### 2. Cut the wave branch + initialize state (REQUIRED)
 
-```bash
-git fetch origin production
-git checkout -b wave/<YYYY-MM-DD>-<slug> origin/production && git push -u origin HEAD
-```
+- Cut the branch from `make base-ref` (fork-aware, fetched; #1164) and push it — snippet, and why the base is never hand-written: [`dispatch-mechanics.md`](dispatch-mechanics.md). Workers branch **off the wave branch** and PR **into it**, so those PRs do NOT auto-close issues. Topology and hotfix sync: [`merge-and-closeout.md`](merge-and-closeout.md).
+- **Then initialize `WAVE-STATE.md` and `.wave/`, before the first dispatch** (#569) — fresh from [`wave-state-template.md`](wave-state-template.md), **overwrite** the previous wave's file, never edit it — supervisor worktrees get reused. Record the wave issue number there.
+- **Then open the wave observability page and hand the user its URL (REQUIRED)** (#1136) — bring-up, resolving the URL from the port registry, the page's honest scope, and why a page that will not start is a disclosure rather than a wave blocker: [`wave-observability.md`](wave-observability.md).
 
-- Every worker worktree branches **off the wave branch** and PRs **into the wave branch**. Production never sees partial wave state; abandoning a failed wave = deleting one branch.
-- Worker PRs into a non-default branch do NOT auto-close issues and do NOT trigger the per-PR auto-bump (#210) — zero mid-wave bumps by construction.
-- If production moves mid-wave (hotfix), the supervisor merges production → wave branch ONCE, at a moment of its choosing. Workers never track production directly.
+### 3. Dispatch — Omnigent child-session workers (primary pattern)
 
-### 3. Dispatch — orchestrator-owned background workers (primary pattern)
+Create workers as Omnigent child sessions (#1081), each on its exclusive worktree. Record `conversation_id` and issue-keyed logs; see [`dispatch-mechanics.md`](dispatch-mechanics.md). Children may die with the parent runner (#1085): commit early and reconcile before resuming.
 
-Superset workspaces are the human-visibility layer (panes); the dispatch mechanism is a background `claude -p` process the supervisor owns, one per issue, in that issue's worktree:
-
-```bash
-( cd <worker-worktree> && env -u ANTHROPIC_BASE_URL -u ANTHROPIC_CUSTOM_HEADERS \
-    claude -p "<prompt>" --model <pinned> --permission-mode acceptEdits \
-    --allowedTools Bash --output-format stream-json ) &> worker-<issue>.log &
-```
-
-Headless gotchas (all hit live): scrub inherited `ANTHROPIC_BASE_URL`/`ANTHROPIC_CUSTOM_HEADERS` or child auth fails; pin `--model` explicitly; unattended workers need `--allowedTools`/acceptEdits or they permission-wedge.
-
-Prompt = superset-launch's Step 6 shape, with the wave overrides: base branch is the **wave branch**, and delivery is **Gate**: *"open a PR into `wave/<...>` referencing #N, then STOP — do not merge; the supervisor serializes merges."* Gate is mandatory whenever ≥2 in-flight issues land in the same plugin; cross-plugin PRs can't collide and may merge into the wave branch on arrival.
-
-Executor fallback rule: if the planned executor (e.g. `rpw build --live`) fights wave rules by construction (its pr-merge node hardcodes base=production + auto-merge until #346 lands), **fall back to headless `claude -p` rather than patching mid-wave**.
+Gate mode is mandatory when ≥2 in-flight issues land in one plugin.
 
 ### 4. Supervise
 
-Liveness signals, in reliability order (earned across waves 2–3: two monitor false-alarms came from layer 3):
+Liveness is **queried from the dispatch layer, never inferred from worktree state** — "no commits yet" is never death, and a result without a PR URL or a specific blocker is a STALL to nudge. Long runs need a **stall signal** too. States, backstop, nudge, salvage: [`supervision.md`](supervision.md). Long runs (#495) remain supervisor-owned; see [`dispatch-mechanics.md`](dispatch-mechanics.md).
 
-1. **Harness task-completion notifications** — primary; never wrong across 10+ workers.
-2. **Worktree progress** — dirty-file counts / commits; the mid-flight signal.
-3. **Process inspection** — last resort only; NEVER pattern-match on prompt text (relaunched workers start "RESUME…", not "Implement…").
+**Keep this session title current:** set `⏳ 🌊 <repo>::<branch>::<date>::wave_supervisor — <summary>` at start; update at milestones, `‼️` when blocked on a human, terminal state at close-out. Rename with `sys_session_rename`.
 
-Plus one dumb backstop: a **60-minute "has each worker produced output yet" silence timer** — it covers the only gap notifications leave (a hung worker that never exits). Process existence alone is NOT liveness (#259 prompt-wedge).
-
-**Salvage protocol** (validated 4/4 and 2/2 on live VPN drops): before relaunching, probe connectivity with a 1-token `claude -p "reply ok"` **with a timeout** (the probe can hang rather than error). Relaunch dead workers in the SAME worktree with a salvage header: *"Review `git status`/`git diff`/`git log` first; continue — don't start over; check for existing comments/PRs before posting."* Partial work survives into the final PRs.
-
-Escalate stalls with a specific question; never silently stall.
+Record every launch, relaunch, nudge, and park in `WAVE-STATE.md` as it happens. Escalate stalls tool-ready, never silently: [`asking-the-user.md`](asking-the-user.md).
 
 ### 5. Merge back (supervisor-serialized)
 
-- Merge worker PRs into the wave branch **one same-plugin PR at a time**, rebasing/refreshing the next against the moved wave branch; intra-wave conflicts are cheap (shared base, no bot interference).
-- **Review before merging — not a rubber stamp.** For skill-authoring PRs, the `description:` frontmatter is the model-routing mechanism (#268): check trigger phrases before merging.
-- Rebase still-running workers onto the advancing wave branch as merges land.
-- As issues complete: close-out happens via the final wave PR (next step); tear down finished workspaces (`superset workspaces delete <id>`, prune branches). A failed `git push --delete` on a remote branch usually means the repo auto-deleted it on merge — not an error.
+Merge worker PRs into the wave branch **one same-plugin PR at a time**, each refreshed against the moved branch; cross-plugin PRs merge on arrival. **Review, don't rubber-stamp** — on skill PRs the `description:` frontmatter is behavior (#268). Log every merge in `WAVE-STATE.md`. Rebase rules and rationale: [`merge-and-closeout.md`](merge-and-closeout.md).
 
 ### 6. Report + terminate
 
-- Running tally at every checkpoint: merged / in-flight / blocked / needs-input, plus budget spent if capped.
-- Wave ends with **ONE PR `wave/<...> → production`** through the normal CI gate (`make verify` + secret scan + auto-bump) exactly once. The wave PR body MUST carry the full `Closes #a, Closes #b, …` list (worker PRs into a non-default branch don't auto-close) and link every constituent worker PR — the per-worker reviews are the real review; the links keep history navigable after squash-merge.
-- Unbounded mode: on backlog-drained or a stop condition, finish in-flight work, run the merge-back, deliver the final wave PR, then hand off: what merged, what's parked in needs-input (with the batched questions), what's left in the slice.
+- Running tally at every checkpoint: merged / in-flight / blocked / needs-input, plus budget spent if capped — **posted as a comment on the wave issue**, not only to the session (#849), with `make wave-heartbeat ISSUE=<n>` (#886). Tally shape: [`status-updates.md`](../communication/references/status-updates.md).
+- The wave ends with **ONE PR `wave/<...> → production`**, shaped by [`wave-pr-template.md`](wave-pr-template.md) (#897): the sole `Closes` list, worker-PR links, label and assignee.
+- **Close-out is a numbered sequence and every step is REQUIRED** — retro mining ([`retro-miner.md`](retro-miner.md)), the final `periodic-review` pass (#374 — invoke the skill, never duplicate its procedure), the delivered-but-open sweep, the human items **asked** not narrated, the process sweep before *and* after teardown (#644 — deleting a worktree doesn't kill what runs in it), the wave issue closed only after the wave PR merges, then `make wave-release ISSUE=<n>` (#886). Walk it in order, then the `WAVE-STATE.md` close-out checklist: [`merge-and-closeout.md`](merge-and-closeout.md).
 
 ## Escalation triggers (pause and ask)
 
-Repeated failure of the same issue after one salvage relaunch · a merge that can't be serialized without judgment the user reserved · needs-input bucket is the only work left · count/budget cap reached · anything that would touch production outside the single wave PR.
+**The whole list** — every other setback is the supervisor's to absorb, and a nudge-clearable stall is not an escalation. An **undiagnosed** repeat failure of the same issue — park it, never implement it yourself (#1021) · an unserializable merge · needs-input is the only work left · cap reached · a `WAVE-STATE.md` branch mismatch at close-out · **a `wave-own` refusal (#886)** · anything touching production outside the wave PR. **How** to ask: [`asking-the-user.md`](asking-the-user.md).

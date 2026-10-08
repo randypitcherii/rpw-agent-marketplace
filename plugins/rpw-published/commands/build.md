@@ -1,59 +1,79 @@
 ---
 name: build
-description: Full lifecycle build — thin Claude-Code host adapter over the harness-neutral `rpw build` graph executor
+description: Build one request through plan, implementation, checks, fresh-context review, and pull request
 argument-hint: <request | #issue>
 ---
 
-# /build — graph-driven lifecycle build
+# /build — standalone public workflow
 
-`/build` runs the full development lifecycle — **plan → dispatch workers → integrate → check → review → merge → finalize** — through the **harness-neutral runtime executor**: the LangGraph `build_graph`, invoked via `rpw build --live`. The lifecycle is owned by `libs/rpw_runtime`, **not** by this prompt.
-
-**This command is the thin Claude-Code host adapter.** It does four things and nothing more: resolve scope, run the fleet-coordination preamble, create/enter the worktree, invoke the executor, and report. **Do NOT re-implement any build phase here — the graph does it.**
-
-> Migration note (#146 / #202): this replaced the legacy 684-line markdown ritual. The runtime graph is the single source of truth for the build lifecycle and is evaluated independently of any plugin (`make runtime-test`, `rpw build`). To recover the old ritual: `git revert` the flip commit.
+Run **plan → claim → worktree → implement → check → review → pull request** using only the files shipped in `rpw-published` and the target repository's own tools. Never assume the target contains the RPW source monorepo or a private plugin.
 
 ## Autonomy
-Execute end-to-end without pausing for confirmation, and do the work yourself — never ask the user to run commands. The runtime drives the build; your job is the preamble + invocation + an honest report. The only legitimate stops: (1) the coordination preamble finds the issue **claimed by another workspace** (skip — don't double-pick), (2) a Phase-0 scan finds an **unavoidable open-PR conflict**, (3) **genuinely ambiguous scope** with no safe default, (4) the no-args issue pick (below).
 
-## Step 1 — Resolve scope
-From everything typed after `/build`:
-- **Free text** (`/build add a retry to the client`) → that text is the build **request**; set the issue only if one is clearly named.
-- **An issue ref** (`/build #142` or `/build 142`) → `gh issue view <N> --json title,body`; the request is the title + body; the issue id is `N`.
-- **No arguments** → `gh issue list --state open` for ready work, present **2+ candidate issues** each with a one-line rationale, and let the user pick **one** (the executor builds one issue per run). This is the only pre-build pause in the no-args case.
+Execute end to end and never ask the user to run commands. Stop only when another workspace owns the issue, an unavoidable open-PR conflict exists, scope is genuinely ambiguous, or the user must choose an issue in the no-argument case.
 
-Capture `ISSUE` (the number, or empty for an untracked free-text build) and `REQUEST` (the scope text).
+## 1. Resolve scope
 
-## Step 2 — Coordination preamble (shared claim ledger)
-Parallel workspaces (Superset, other Claude sessions, CI) coordinate through a shared GitHub-Issues claim ledger via the harness-neutral `rpw` surface — the lifecycle graph itself never coordinates. When `ISSUE` is a real GitHub issue:
+- Free text is the build request.
+- For `#142` or `142`, read `gh issue view 142 --json title,body` and use its title and body.
+- With no arguments, list open issues, present at least two good candidates, and let the user select one.
 
-1. **Honor-check** — `uv run --project libs/rpw_runtime python -m rpw_runtime.cli honor-check --issue <ISSUE>`. **Exit 3 = claimed by another workspace**: surface its branch/timestamp and **STOP**. `clear` / `own-claim` / `unsentineled` → proceed.
-2. **Overlap scan** — `gh pr list --state open --base <default-branch> --json number,title,headRefName,files` (this repo's default is `production`). If the planned scope overlaps an open PR's files, surface it and let the user choose (merge that PR first / stack on it / proceed).
-3. **Claim** — `uv run --project libs/rpw_runtime python -m rpw_runtime.cli claim --issue <ISSUE>` (best-effort; applies the `status: in-progress` label + posts the claim comment).
+Capture `ISSUE` when present and a concise `REQUEST`.
 
-(Skip honor-check/claim for an untracked free-text build with no issue.)
+## 2. Coordinate
 
-## Step 3 — Worktree
-- If you are **already inside a feature worktree** (e.g. a Superset workspace on a `feat/*` or `superset/*` branch), use it.
-- Otherwise create one from the default branch: `git worktree add ../<short-slug>-<ISSUE> -b feat/<short-slug>-<ISSUE> <default-branch>` (or `EnterWorktree` if available). All build work happens in that worktree.
-
-## Step 4 — Invoke the executor
-Run the runtime build, rooted at the worktree. The Databricks workspace pool (429 resilience) comes from `RPW_DATABRICKS_POOL` — comma-separated, distinct-host `databricks` profiles (from `.env` or your shell); it falls back to the single default workspace if unset.
+For a real issue:
 
 ```bash
-RPW_DATABRICKS_POOL="${RPW_DATABRICKS_POOL:-DEFAULT}" \
-  uv run --project libs/rpw_runtime python -m rpw_runtime.cli \
-  build --live --issue "<ISSUE>" --request "<REQUEST>" --worktree "<WORKTREE_PATH>"
+"${CLAUDE_PLUGIN_ROOT}/scripts/build-claim.sh" honor-check "$ISSUE"
 ```
 
-(Omit `--issue` for an untracked free-text build.) This runs the **entire lifecycle**: plan → dispatch build workers (real red→green) → integrate → run the project gate → security / simplification / docs review → and, **on a clean review**, create + squash-merge the PR to the default branch, then finalize. It is a long-running autonomous subprocess — **run it in the background and wait for it to finish**; it prints the final `BuildState` as JSON on completion.
+Exit 3 means another workspace owns it: report the owner and stop. Otherwise:
 
-## Step 5 — Report + hand-off
-Parse the printed final `BuildState` and report it plainly:
-- `phase`, `finalized`, `merge_status`, `pr_url`
-- `check_results.passed` (the project gate)
-- the `security-review` receipt: `go` / `no-go`
-- per-task `result.status` + `files_changed`
+1. inspect open pull requests against the repository's actual default branch for overlap;
+2. if overlap is unavoidable, let the user choose whether to stack, wait, or proceed;
+3. claim best-effort with `${CLAUDE_PLUGIN_ROOT}/scripts/build-claim.sh claim "$ISSUE"`.
 
-**If the review returned `no-go`** (`merge_status: blocked`): the merge was **deliberately skipped** (fail-closed). Surface the blocking findings and the `stall_recovery` note — the work is on the feature branch for follow-up; do **not** merge it by hand. Receipts are written under `<WORKTREE>/.rpw/build/receipts/`.
+Skip claims for an untracked free-text request.
 
-End with a one-line hand-off: **what** built, **where** (PR url / branch), and the **go/no-go**.
+## 3. Create or reuse a worktree
+
+Reuse the current feature worktree when already in one. Otherwise resolve and fetch the upstream default branch with the shipped helper:
+
+```bash
+BASE=$(source "${CLAUDE_PLUGIN_ROOT}/scripts/git-base-branch.sh" && base_ref)
+git worktree add "../<short-slug>-${ISSUE:-work}" -b "feat/<short-slug>-${ISSUE:-work}" "$BASE"
+```
+
+Never branch from an unfetched local default or hard-code `main`/`production`. Create the branch and worktree in one step.
+
+## 4. Build
+
+1. Read the target repository's agent guidance and determine its real check command.
+2. Write a short plan with file ownership and acceptance criteria.
+3. Dispatch one `rpw-published:build-worker` with `isolation: "worktree"`, the absolute worktree path, request, issue, constraints, and check command. Use additional workers only for disjoint ownership.
+4. Verify every claimed commit and ensure the worktree is clean, as required by the `subagent-dispatch` skill.
+5. Run the target repository's check command yourself.
+6. Dispatch `rpw-published:reviewer` against the complete diff. Its fail-closed `no-go` verdict blocks merge; do **not** merge by hand.
+7. Fix valid findings, rerun checks and review, then push and open a PR with **What / Why / Verification**. Follow the target repository's merge policy; do not auto-merge unless that policy explicitly permits it.
+
+If the Agent tool is unavailable in the current harness, perform the same steps directly instead of pretending a dispatch occurred.
+
+## 5. Validate and report
+
+Require the human path for a net-new user-facing surface unless the target repository explicitly defines another policy. For deterministic refactors, removals, docs, regression-tested bug fixes, or internal library / runtime code with no user-facing surface and full deterministic tests, green gates and review can be sufficient.
+
+For a complete issue, use `Closes #N`. For partial work, use `Part of #N` or `Advances #N` and leave the issue open.
+
+Report:
+
+- request and issue;
+- branch/worktree and commit;
+- check command and result;
+- reviewer PASS/FAIL and findings;
+- PR URL or precise blocker;
+- whether human validation remains.
+
+Open the report with the five-state status line ([`../skills/communication/references/status-updates.md`](../skills/communication/references/status-updates.md)) — `DONE`, `FAILED`, or `STOPPED`, never a progress-shaped line.
+
+End with one line: what was built, where it is, and the go/no-go verdict.

@@ -48,6 +48,7 @@ The server runs over stdio. Register in your MCP client using `jira.mcp.json` �
 
 ```bash
 uv run python -m unittest test_run_mcp_env -v
+uv run python -m unittest test_mcp_response_shaping -v   # response shaping (#828)
 ```
 
 ## Tools
@@ -62,3 +63,29 @@ uv run python -m unittest test_run_mcp_env -v
 | `jira_transition_issue` | Transition an issue to a new state |
 | `jira_list_projects` | List all projects the user can access |
 | `jira_api_request` | Escape hatch — call any Jira REST v3 endpoint |
+
+## Response shaping (#828)
+
+`jira_search` and `jira_get_issue` strip Jira's REST self-description from their
+responses. Measured against the live connection on 2026-09-16, `jira_search` over
+30 issues with the default five fields was **43,165 bytes**, roughly 30% of it
+Jira describing its own API: `issue.self` (7%), `issue.expand` (6%), and a
+`self` + `iconUrl` pair plus a `statusCategory` rollup inside every nested
+`status`, `priority` and `assignee`. `fields.status` alone cost 13.7 KB to say
+`"Open"`. Shaped, the same query returns **15,430 bytes** (−64%).
+
+Unlike the other servers here this is a **blacklist**, because the `fields`
+argument is the caller's own projection — they name the fields they want,
+including custom fields this code has never heard of. Only these keys are
+removed, at every nesting level: `self`, `expand`, `iconUrl`, `avatarUrls`,
+`avatarId`, `entityId`, `statusCategory`, `hierarchyLevel`, `scope`.
+
+Everything you asked for comes back, **including nulls** — "unassigned" and "I
+did not ask for assignee" are different answers. `description` is deliberately
+*not* in the set: a deep drop cannot tell `status.description` (boilerplate) from
+`fields.description` (the issue's body), and losing an issue's description to save
+3% is the failure this shaping exists to avoid.
+
+Paging is carried through as `next_page_token` and `is_last`.
+**`verbose=true` returns Jira's raw bytes**; shaped responses carry a `_shaped`
+note. The write tools and `jira_api_request` are unshaped passthroughs.

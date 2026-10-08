@@ -1,0 +1,359 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+readonly CONFIG_DIR="$HOME/.config/claude-home"
+readonly PROFILE="$CONFIG_DIR/claude-home.sb"
+readonly CLAUDE_BIN="${CLAUDE_HOME_CLAUDE_BIN:-$HOME/.local/bin/claude}"
+readonly MANAGED_SETTINGS="/Library/Application Support/ClaudeCode/managed-settings.json"
+# Greppable capability marker (#1794). host-preflight reads this out of the INSTALLED
+# launcher to tell a session-lifetime watcher from the 60-second one-shot that shipped
+# with #1777 — a stale copy in ~/.local/bin is otherwise indistinguishable.
+readonly WATCHER_SCOPE="session-lifetime"
+readonly DISMISS_LOG="${CLAUDE_HOME_DISMISS_LOG:-$HOME/.claude-home/auto-dismiss.log}"
+
+run_check=0
+run_watch=0
+
+# ---------------------------------------------------------------------------
+# Unattended-dialog watcher (#1777 startup, #1794 late prompts)
+#
+# Claude Code renders blocking dialogs that a host-spawned pane has nobody to
+# answer. Two shapes are known to wedge an unattended session forever:
+#
+#   1. "Settings Error" at startup — the managed-settings file exists but this
+#      sandbox makes it unreadable (EPERM), option 3 is "Continue without these
+#      settings" (#1777).
+#   2. A tool-permission prompt ANY time later — the enterprise policy
+#      (disableBypassPermissionsMode + allowManagedPermissionRulesOnly) vetoes
+#      `--permission-mode bypassPermissions`, so `Claude wants to call **Bash**`
+#      renders at minute 10 with `permission_mode: bypassPermissions` in the
+#      payload. #1777's 60-second one-shot watcher had already exited, and it
+#      grepped for 'Settings Error', which this dialog never says (#1794).
+#
+# Three design rules follow, and together they are the fix:
+#
+#   * The watcher lives as long as the launcher (i.e. as long as the Claude
+#     process) and re-arms after every dismissal. It is a supervisor loop.
+#   * It keys on the dialog's OPTION AFFORDANCE, not on a title string: a
+#     numbered option list, a selection cursor on one of those rows, and a
+#     proceed-shaped option. A fourth dialog shape with a proceed option is
+#     therefore covered the day it ships, instead of silently reintroducing
+#     this bug.
+#   * A dialog-shaped pane that is MISSING the selection cursor is logged and
+#     NOT pressed. Two failures are avoided at once: a numbered list in the
+#     agent's own output never gets a keystroke (this wave's workers print
+#     "1. Retry / 2. Continue without these settings" while discussing the very
+#     bug), and a real dialog that renders without a cursor shows up as a log
+#     line instead of a silent miss.
+#
+# Nothing but that one digit is ever typed, and every decision is appended to
+# $DISMISS_LOG so a supervisor can see afterwards what fired.
+# ---------------------------------------------------------------------------
+
+# stdin: a pane capture. stdout: "<shape>\t<key>\t<option text>", or nothing when
+# the pane holds no dismissable dialog. A <key> of "-" means "dialog-shaped but no
+# selection cursor": report, press nothing. Separated out so it is testable without
+# tmux (`claude-home --dismiss-decide < fixture`).
+dismiss_decision() {
+  /usr/bin/awk -v require_cursor="${CLAUDE_HOME_AUTO_DISMISS_REQUIRE_CURSOR:-1}" '
+    # One contiguous numbered block at a time (#1848). A pane-wide scan let text ANYWHERE
+    # in the capture supply the winning digit for a dialog rendered somewhere else — a
+    # forged `9.` above a real three-option prompt got `9` pressed into it. Only the block
+    # that carried the selection cursor is allowed to answer.
+    function flush_block() {
+      if (b_options >= 2 && b_best > 0) {
+        c_key = b_bestkey; c_text = b_besttext; c_have = 1
+        if (b_cursor) { k_key = b_bestkey; k_text = b_besttext; k_have = 1 }
+      }
+      b_options = 0; b_best = 0; b_bestkey = ""; b_besttext = ""; b_cursor = 0
+    }
+    {
+      line = $0
+      all = all "\n" tolower(line)
+      # Box framing is not content: strip a left and a right border before judging
+      # whether this line continues the option run above it.
+      bare = line
+      sub(/^[ \t]*[|│]/, "", bare)
+      sub(/[ \t]*[|│][ \t]*$/, "", bare)
+      is_option = 0
+      if (match(line, /[0-9][.)][ \t]+/)) {
+        prefix = substr(line, 1, RSTART - 1)
+        # Only a real option row: the digit may be preceded by a selection marker
+        # (❯, whitespace, a box border) but never by words.
+        if (prefix ~ /^[^0-9A-Za-z]*$/) {
+          is_option = 1
+          key = substr(line, RSTART, 1)
+          text = substr(line, RSTART + RLENGTH)
+          sub(/[ \t]+$/, "", text)
+          # A box-drawing right border is framing, not option text.
+          sub(/[ \t]*[|│][ \t]*$/, "", text)
+          b_options++
+          # A selection cursor on any option row of THIS block. Only the box-drawing
+          # arrows count: `>` and `*` are a markdown blockquote and a markdown bullet, so
+          # ordinary pane content forged a dialog and got a digit pressed into it (#1847).
+          if (prefix ~ /(❯|▶|➤)/) b_cursor = 1
+          low = tolower(text)
+          score = 0
+          # Strongest: an option that both proceeds AND stops the dialog recurring.
+          # Matched on "ask again" rather than "don.t ask again" so a typographic
+          # apostrophe (U+2019, three bytes) cannot break the match.
+          if (low ~ /continue without/ || low ~ /ask again/) score = 3
+          else if (low ~ /^yes/ || low ~ /^allow/ || low ~ /^accept/ || low ~ /^proceed/) score = 1
+          if (score > b_best) { b_best = score; b_bestkey = key; b_besttext = text }
+        }
+      }
+      # A blank line or flush-left prose ends the run; an INDENTED non-option line
+      # continues it, so an option whose text wrapped onto a second line in a narrow
+      # pane does not split its own dialog into two unanswerable halves.
+      if (!is_option && (bare ~ /^[ \t]*$/ || bare !~ /^[ \t]/)) flush_block()
+    }
+    END {
+      flush_block()
+      # Two options minimum, in one block: a numbered line in prose is not a dialog.
+      if (!c_have) exit 0
+      shape = "unknown-dialog"
+      if (all ~ /settings error/) shape = "settings-error"
+      else if (all ~ /wants to call/ || all ~ /do you want to/) shape = "tool-permission"
+      # The cursor-carrying block answers, and nothing else does.
+      if (k_have) {
+        printf "%s\t%s\t%s\n", shape, k_key, k_text
+        exit 0
+      }
+      if (require_cursor + 0 != 0) {
+        printf "%s\t-\t%s\n", shape, c_text
+        exit 0
+      }
+      printf "%s\t%s\t%s\n", shape, c_key, c_text
+    }
+  '
+}
+
+# One line per decision, in the one place a supervisor is told to look (#1794 item 3).
+# Never fatal: an unwritable log must not take down the watcher keeping the session alive.
+dismiss_log() {
+  local option="$5"
+  # The audit value is WHICH option shape was chosen, not the full text — and the text is
+  # raw pane content, so an unbounded copy of it is a leak surface in a file that outlives
+  # the session (#1849). 80 characters is enough to recognise the shape.
+  (( ${#option} <= 80 )) || option="${option[1,77]}..."
+  printf '%s action=%s shape=%s key=%s pane=%s option=%s\n' \
+    "$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" "$4" "\"$option\"" \
+    >> "$DISMISS_LOG" 2>/dev/null || true
+}
+
+# Capture the pane and print the decision for it (empty when there is no dialog).
+# Returns non-zero only when the pane itself is gone — i.e. the session ended.
+pane_decision() {
+  local text
+  text=$(tmux -S "$1" capture-pane -p -t "$2" 2>/dev/null) || return 1
+  [[ -n "$text" ]] || return 0
+  print -r -- "$text" | dismiss_decision 2>/dev/null || true
+}
+
+# The watcher body. $1 = tmux socket, $2 = pane, $3 = pid to bound on (empty: bound
+# on the pane's life alone). Exits when the pane disappears, when that pid exits, or
+# after CLAUDE_HOME_AUTO_DISMISS_MAX_SECONDS. Never unbounded in any of the three
+# directions, so it cannot outlive what it was watching (#644).
+dismiss_watch_loop() {
+  local sock="$1" pane="$2" guard="$3"
+  local interval="${CLAUDE_HOME_AUTO_DISMISS_INTERVAL:-0.5}"
+  # 0 = live for the whole session (the point of #1794). A positive value is a test
+  # and debugging affordance, never the production path.
+  local max_seconds="${CLAUDE_HOME_AUTO_DISMISS_MAX_SECONDS:-0}"
+  # How long to wait for a dismissed dialog to leave the pane before assuming the
+  # keypress did not land and pressing again.
+  local grace="${CLAUDE_HOME_AUTO_DISMISS_GRACE:-15}"
+  # The log holds pane text, so it is operator-only (#1849). umask covers the directory
+  # and every append; the chmods repair a world-readable pair created before this fix.
+  umask 077
+  /bin/mkdir -p "${DISMISS_LOG:h}" 2>/dev/null || true
+  /bin/chmod 700 "${DISMISS_LOG:h}" 2>/dev/null || true
+  [[ ! -e "$DISMISS_LOG" ]] || /bin/chmod 600 "$DISMISS_LOG" 2>/dev/null || true
+
+  local started=$SECONDS decision="" rest="" still=""
+  local shape="" key="" option="" observed="" pressed_at=0
+
+  while :; do
+    [[ -z "$guard" ]] || kill -0 "$guard" 2>/dev/null || break
+    sleep "$interval"
+    if (( max_seconds > 0 )) && (( SECONDS - started >= max_seconds )); then
+      break
+    fi
+    decision=$(pane_decision "$sock" "$pane") || break
+    [[ -n "$decision" ]] || continue
+
+    shape=${decision%%$'\t'*}
+    rest=${decision#*$'\t'}
+    key=${rest%%$'\t'*}
+    option=${rest#*$'\t'}
+
+    if [[ "$key" == "-" ]]; then
+      # Dialog-shaped, no selection cursor. Press nothing; say so once per distinct
+      # option text, so a static pane cannot flood the log but a new shape is loud.
+      if [[ "$observed" != "$shape/$option" ]]; then
+        observed="$shape/$option"
+        dismiss_log observed-no-cursor "$shape" none "$pane" "$option"
+      fi
+      continue
+    fi
+    observed=""
+
+    tmux -S "$sock" send-keys -t "$pane" "$key"
+    pressed_at=$SECONDS
+    dismiss_log pressed "$shape" "$key" "$pane" "$option"
+
+    # Re-arm only once the dialog has LEFT the pane. Measured while building this:
+    # without the wait, the loop re-presses into a pane that has not redrawn yet and
+    # the extra digits queue up in the tty, so a later prompt is answered by a stale
+    # keystroke instead of the right one. After `grace` seconds an un-cleared dialog
+    # is treated as a press that never landed, and gets pressed again.
+    while :; do
+      [[ -z "$guard" ]] || kill -0 "$guard" 2>/dev/null || break 2
+      sleep "$interval"
+      if (( SECONDS - pressed_at >= grace )); then
+        break
+      fi
+      still=$(pane_decision "$sock" "$pane") || break 2
+      [[ -n "$still" ]] || break
+    done
+  done
+}
+
+# Fork the watcher for the life of this launcher. The launcher does not exec, so its
+# pid is alive for exactly as long as the Claude process it supervises.
+auto_dismiss_blocking_dialog() {
+  local pane="${CLAUDE_HOME_AUTO_DISMISS_PANE:-${TMUX_PANE:-}}"
+  local sock="${CLAUDE_HOME_AUTO_DISMISS_SOCKET:-${${TMUX:-}%%,*}}"
+  [[ -n "$pane" && -n "$sock" ]] || return 0
+  dismiss_watch_loop "$sock" "$pane" $$ &!
+}
+
+usage() {
+  print -r -- "Usage: claude-home [--check] [--] [claude arguments]"
+  print -r -- ""
+  print -r -- "Runs Claude Code in a Seatbelt sandbox that hides the enterprise"
+  print -r -- "managed-settings policy; everything else behaves like a normal session."
+  print -r -- ""
+  print -r -- "  --check   Verify the boundary, Claude startup, and networking"
+  print -r -- "  --dismiss-decide"
+  print -r -- "            Read a tmux pane capture on stdin; print the auto-dismiss"
+  print -r -- "            decision as <shape>TAB<key>TAB<option> (testing hook)"
+  print -r -- "  --dismiss-watch"
+  print -r -- "            Run the dialog watcher in the foreground against an"
+  print -r -- "            already-running pane. Target it with"
+  print -r -- "            CLAUDE_HOME_AUTO_DISMISS_SOCKET / _PANE; it exits when"
+  print -r -- "            that pane goes away."
+}
+
+while (( $# )); do
+  case "$1" in
+    --check)
+      run_check=1
+      shift
+      ;;
+    --launcher-help)
+      usage
+      exit 0
+      ;;
+    --dismiss-decide)
+      # Testing hook (#1794): no sandbox, no tmux, no claude binary needed.
+      dismiss_decision
+      exit 0
+      ;;
+    --dismiss-watch)
+      run_watch=1
+      shift
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if (( run_watch )); then
+  # Attach to a pane that already exists — a wedged session someone wants unwedged,
+  # or a test. No sandbox and no claude binary are involved, so this path works where
+  # a nested sandbox-exec is denied.
+  watch_pane="${CLAUDE_HOME_AUTO_DISMISS_PANE:-${TMUX_PANE:-}}"
+  watch_sock="${CLAUDE_HOME_AUTO_DISMISS_SOCKET:-${${TMUX:-}%%,*}}"
+  if [[ -z "$watch_pane" || -z "$watch_sock" ]]; then
+    print -u2 -r -- "--dismiss-watch needs a target: set CLAUDE_HOME_AUTO_DISMISS_SOCKET and CLAUDE_HOME_AUTO_DISMISS_PANE, or run inside tmux"
+    exit 2
+  fi
+  dismiss_watch_loop "$watch_sock" "$watch_pane" ""
+  exit 0
+fi
+
+if [[ ! -x "$CLAUDE_BIN" ]]; then
+  print -u2 -r -- "Claude executable not found: $CLAUDE_BIN"
+  exit 1
+fi
+
+if [[ ! -r "$PROFILE" ]]; then
+  print -u2 -r -- "Seatbelt profile not found: $PROFILE"
+  exit 1
+fi
+
+run_sandboxed() {
+  /usr/bin/sandbox-exec -D HOME="$HOME" -f "$PROFILE" "$@"
+}
+
+check_policy() {
+  local probe="$CONFIG_DIR/check-home-$$"
+  local failures=0
+  trap "rm -f '$probe'" EXIT HUP INT TERM
+
+  print -r -- "home probe" > "$probe"
+  if HOME_PROBE="$probe" run_sandboxed /bin/sh -c \
+    '/usr/bin/wc -c < "$HOME_PROBE" >/dev/null'; then
+    print -r -- "✓ Home reads work"
+  else
+    print -r -- "✗ Home reads failed"
+    (( failures += 1 ))
+  fi
+
+  if run_sandboxed /bin/cat "$MANAGED_SETTINGS" >/dev/null 2>&1; then
+    print -r -- "✗ Managed settings file is readable"
+    (( failures += 1 ))
+  else
+    print -r -- "✓ Managed settings file is hidden"
+  fi
+
+  if run_sandboxed "$CLAUDE_BIN" --version >/dev/null; then
+    print -r -- "✓ Claude starts"
+  else
+    print -r -- "✗ Claude failed to start"
+    (( failures += 1 ))
+  fi
+
+  if run_sandboxed /usr/bin/curl --silent --show-error \
+    --output /dev/null https://api.anthropic.com; then
+    print -r -- "✓ Networking works"
+  else
+    print -r -- "✗ Networking failed"
+    (( failures += 1 ))
+  fi
+
+  if (( failures )); then
+    print -u2 -r -- "$failures check(s) failed"
+    return 1
+  fi
+
+  print -r -- "All checks passed"
+}
+
+if (( run_check )); then
+  check_policy
+  exit $?
+fi
+
+if [[ "${CLAUDE_HOME_AUTO_DISMISS:-0}" == 1 ]]; then
+  auto_dismiss_blocking_dialog
+fi
+
+run_sandboxed "$CLAUDE_BIN" "$@"

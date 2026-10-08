@@ -5,7 +5,7 @@ description: Use when creating or modifying MCP servers in this repo. Enforces s
 
 # MCP Standards
 
-Required standards for any MCP server in the `rpw-published` and `rpw-private` plugins and this repository. Apply when adding new servers or updating existing ones.
+Required standards for MCP servers shipped by `rpw-published`. Apply when adding or updating a public server.
 
 ## Hard Rules
 
@@ -15,7 +15,7 @@ Required standards for any MCP server in the `rpw-published` and `rpw-private` p
 4. **Follow the APP_ENV / `template.env` convention** — commit a placeholder `template.env`; the launcher selects `<APP_ENV>.env` (`dev`/`test`/`prod`, default `dev`) at startup, checking the server dir first, then the stable user path `~/.claude/mcp-servers/<server-dir-name>/<APP_ENV>.env`. Mechanics live in the `env-preferences` skill — defer to it rather than restating.
 5. **Never commit real env files** — `.gitignore` must exclude `dev.env`/`test.env`/`prod.env` (and the legacy `.env`). Only `template.env`, with placeholders and no real secrets, is committed.
 6. **Use server sample file naming** — `<server>.mcp.json` (e.g. `google_tasks.mcp.json`, `google_docs.mcp.json`).
-7. **plugin-root `.mcp.json`** — every plugin must ship a root `.mcp.json` at the repo/plugin root that wires all MCP servers.
+7. **Register servers in `mcp-servers/rpw/servers.json`** — the plugin-root `.mcp.json` holds only the `rpw` aggregator.
 8. **Use `${CLAUDE_PLUGIN_ROOT}` for paths** — MCP config args must use `${CLAUDE_PLUGIN_ROOT}` placeholders (not machine-specific absolute paths) for Claude portability.
 
 ## Per-Server Required Files
@@ -62,11 +62,7 @@ if __name__ == "__main__":
 - `precheck` — an optional `(env_name, app_env) -> error | None` for auth checks that
   aren't a simple env-var presence test (e.g. gemini-image's gcloud ADC probe).
 
-The lib ships **duplicated** into both `plugins/rpw-published/mcp-servers/lib/` and
-`plugins/rpw-private/mcp-servers/lib/` (kept byte-identical by a repo-validation test).
-It is intentionally *not* extracted to repo-root `libs/`: the plugin cache and the
-public mirror ship only the plugin dir, so a repo-root path dependency would not
-resolve at runtime. See ADR-2026-06-22.
+In the public artifact, the shared runtime library is `plugins/rpw-published/mcp-servers/lib/`. Keep servers dependent only on this shipped path; a repo-root or unpublished-library dependency will not resolve from the plugin cache. If the target repository defines a generator or sync check for this directory, run it before committing.
 
 ## Sample MCP Config Pattern
 

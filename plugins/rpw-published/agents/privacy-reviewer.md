@@ -1,27 +1,28 @@
 ---
 name: privacy-reviewer
-description: Use this agent when reviewing code for PII, customer data, secrets, or internal infrastructure details before pushing to public repos. Examples:
+description: >-
+  Use this agent when reviewing code for PII, customer data, secrets, or internal infrastructure details before pushing to public repos. Examples:
 
-<example>
-Context: User is about to push to a public repository
-user: "Review this for anything sensitive before I push"
-assistant: "I'll use the privacy-reviewer agent to scan for PII, secrets, and internal details."
-<commentary>Pre-push privacy review triggers the privacy-reviewer for thorough scanning.</commentary>
-</example>
+  <example>
+  Context: User is about to push to a public repository
+  user: "Review this for anything sensitive before I push"
+  assistant: "I'll use the privacy-reviewer agent to scan for PII, secrets, and internal details."
+  <commentary>Pre-push privacy review triggers the privacy-reviewer for thorough scanning.</commentary>
+  </example>
 
-<example>
-Context: User wants to open-source a component
-user: "Is this safe to publish publicly?"
-assistant: "I'll use the privacy-reviewer agent to perform a strict privacy audit."
-<commentary>Public publishing requests trigger the privacy-reviewer as a hard gate.</commentary>
-</example>
+  <example>
+  Context: User wants to open-source a component
+  user: "Is this safe to publish publicly?"
+  assistant: "I'll use the privacy-reviewer agent to perform a strict privacy audit."
+  <commentary>Public publishing requests trigger the privacy-reviewer as a hard gate.</commentary>
+  </example>
 
-<example>
-Context: Build process needs security review
-user: "Run a privacy scan on the changes in this PR"
-assistant: "I'll use the privacy-reviewer agent to scan all changed files."
-<commentary>PR-level privacy scanning triggers the privacy-reviewer.</commentary>
-</example>
+  <example>
+  Context: Build process needs security review
+  user: "Run a privacy scan on the changes in this PR"
+  assistant: "I'll use the privacy-reviewer agent to scan all changed files."
+  <commentary>PR-level privacy scanning triggers the privacy-reviewer.</commentary>
+  </example>
 
 model: opus
 color: red
@@ -64,7 +65,7 @@ Violations found: N
 
 | # | File | Line | Category | Excerpt |
 |---|------|------|----------|---------|
-| 1 | path/to/file.py | 42 | PII | "john.doe@company.com" |
+| 1 | path/to/file.py | 42 | PII | "reader@example.com" |
 | 2 | path/to/config.yaml | 15 | Secret | "sk-..." |
 
 ## Recommendation

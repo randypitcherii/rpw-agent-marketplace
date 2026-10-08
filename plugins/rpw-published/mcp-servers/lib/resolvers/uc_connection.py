@@ -1,16 +1,24 @@
 """
 Resolver that fetches credentials from a Unity Catalog connection and sets them as env vars.
+
+The fresh path below shells out to the ``databricks`` CLI twice for current-user and connection requests. A
+short-TTL on-disk cache (``lib.resolution_cache``) short-circuits both
+shell-outs when a fresh resolution for the same (connection, profile) exists;
+any cache miss/expiry/corruption falls through to the fresh path unchanged.
 """
 
 import json
 import os
 import subprocess
 
+from lib import resolution_cache
 from lib.errors import (
     CredentialResolutionError,
     databricks_auth_expired,
     looks_like_databricks_auth_expired,
 )
+
+_CACHE_KIND = "uc_connection"
 
 
 def _get_user_id(profile: str) -> str:
@@ -74,6 +82,21 @@ def resolve(
                      (e.g. {"access_token": "SLACK_BOT_TOKEN"})
         databricks_profile: Databricks CLI profile to use
     """
+    identity = {"connection_name": connection_name, "profile": databricks_profile}
+    cached = resolution_cache.load(_CACHE_KIND, identity)
+    if cached is not None:
+        cached_options = cached.get("options")
+        if isinstance(cached_options, dict) and all(
+            field in cached_options and isinstance(cached_options[field], str)
+            for field in env_var_map
+        ):
+            for field, env_var in env_var_map.items():
+                os.environ[env_var] = cached_options[field]
+            return
+        # Cached shape can't satisfy this env_var_map (older schema, different
+        # fields). Drop it and fall through to a fresh resolution — fail safe.
+        resolution_cache.invalidate(_CACHE_KIND, identity)
+
     user_id = _get_user_id(databricks_profile)
     response = _get_connection_credentials(connection_name, user_id, databricks_profile)
 
@@ -101,3 +124,8 @@ def resolve(
                 },
             )
         os.environ[env_var] = options[field]
+
+    # Cache only a fully successful ACTIVE resolution, and only after every
+    # requested field was applied. Store the whole options map so a different
+    # env_var_map over the same connection can also hit.
+    resolution_cache.store(_CACHE_KIND, identity, {"options": options})

@@ -1,0 +1,49 @@
+{
+  "$comment": "The one house style for Google Docs (#2001). The single source of style values: the linter (style_lint.py) checks against it, and the normalize pass will write it. Sections tagged source=template are measured from the owner's hand-built template doc (docs/research/2026-09-28-gdocs-house-style-spec.md). Sections tagged source=carried come from earlier validated decisions (#1768, #1770) because the template has no such construct. Unset named-style properties inherit from NORMAL_TEXT, as they do in Docs.",
+  "page": {
+    "source": "template",
+    "width_pt": 612,
+    "height_pt": 792,
+    "margin_pt": 72
+  },
+  "named_styles": {
+    "source": "template",
+    "NORMAL_TEXT": {"font_family": "Arial", "font_size_pt": 13, "bold": false, "line_spacing": 115, "space_above_pt": 0, "space_below_pt": 0},
+    "HEADING_1": {"font_size_pt": 22, "bold": true, "space_above_pt": 20, "space_below_pt": 6},
+    "HEADING_2": {"font_size_pt": 18, "bold": true, "space_above_pt": 18, "space_below_pt": 6},
+    "HEADING_3": {"font_size_pt": 16, "bold": true, "space_above_pt": 16, "space_below_pt": 4},
+    "HEADING_4": {"font_size_pt": 12, "space_above_pt": 14, "space_below_pt": 4, "color": "#666666"},
+    "HEADING_5": {"font_size_pt": 11, "space_above_pt": 12, "space_below_pt": 4, "color": "#666666"},
+    "HEADING_6": {"font_size_pt": 11, "space_above_pt": 12, "space_below_pt": 4, "color": "#666666"},
+    "TITLE": {"font_size_pt": 26, "space_below_pt": 3},
+    "SUBTITLE": {"font_size_pt": 15, "space_below_pt": 16, "color": "#666666"}
+  },
+  "lists": {
+    "source": "template",
+    "unordered_glyph": "-",
+    "unordered_glyph_severity": "warning",
+    "unordered_glyph_note": "The Docs API cannot create a '-' list (docs/research/2026-09-13-gdocs-dash-bullets.md), so normalize cannot fix this. Reported, never blocking.",
+    "indent_step_pt": 36,
+    "hanging_indent_pt": 18
+  },
+  "blank_paragraphs": {
+    "source": "template",
+    "max_consecutive": 1,
+    "allow_adjacent_to_heading": false,
+    "note": "The template has no blank separator paragraphs. Heading spaceAbove separates sections."
+  },
+  "code": {
+    "source": "carried",
+    "font_family": "Courier New",
+    "allowed_font_families": ["Courier New", "Roboto Mono"],
+    "note": "Courier New for typed code; Roboto Mono is what the Docs native code block uses (#1768)."
+  },
+  "tables": {
+    "source": "carried",
+    "cell_content_alignment": "MIDDLE",
+    "header_row_bold": true,
+    "header_row_tint_rgb": {"red": 0.937, "green": 0.937, "blue": 0.937},
+    "full_text_width": true,
+    "width_tolerance_pt": 1
+  }
+}

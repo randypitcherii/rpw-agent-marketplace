@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Overlap antipattern</title>
+<style>
+/* ══ House theme: Brief. Copy verbatim; change only --canvas-w / --canvas-h. ══
+   A diagram is a one-slide briefing: brand bar, title + one-sentence subtitle,
+   kicker-labelled sections, cards that carry a headline and plain-weight copy. */
+:root{
+  --ink:#000000;            /* every heading, stroke, and bullet */
+  --paper:#FFFFFF;          /* canvas + default card fill */
+  --brand:#0B5CFF;          /* the other party / the boundary crossed — one per diagram */
+  --brand-tint:#E9F0FF;     /* fill for .brand cards */
+  --gate:#FFD24D;           /* the moment a human must act — the anchor colour */
+  --gate-tint:#FFF4D2;      /* fill for .gate cards */
+  --muted:#F2F2F2;          /* de-emphasised / stop states */
+  --font:-apple-system,"SF Pro Display","Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --canvas-w:1280px;        /* PNG width in CSS px — keep <= 1600 */
+  --canvas-h:600px;         /* slide proportion (16:7.5). A *minimum*, never a clip; 0 = hug content */
+  --gutter:34px;            /* width of a chevron / connector column */
+}
+*{margin:0;padding:0;box-sizing:border-box}
+/* body carries the width so render.sh can measure the page off it. min-height,
+   never height: a slide keeps its shape when content is short, grows when it is not. */
+body{width:var(--canvas-w);min-height:var(--canvas-h);background:var(--paper);color:var(--ink);
+     font-family:var(--font);font-weight:700;-webkit-font-smoothing:antialiased;
+     display:flex;flex-direction:column}
+
+/* ── Frame: brand bar, then title + subtitle on one baseline ─────────────── */
+.brand-bar{height:5px;background:var(--brand);flex:0 0 auto}
+.hd{flex:0 0 auto;padding:19px 34px 13px;display:flex;align-items:baseline;gap:18px;
+    border-bottom:1px solid var(--ink)}
+.hd h1{font-size:24px;letter-spacing:-.015em;white-space:nowrap}
+.hd p{font-size:13.5px;font-weight:400}
+
+/* ── Canvas: sections stack top-to-bottom; each section is a kicker + a row ── */
+.canvas{flex:1 1 auto;min-height:0;padding:16px 34px 18px;display:flex;flex-direction:column;gap:16px}
+.section{display:flex;flex-direction:column;gap:11px}
+.section.grow{flex:1 1 auto;min-height:0}
+.kicker{font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;
+        padding-top:7px;border-top:4px solid var(--ink)}
+.kicker.gate{border-top-color:var(--gate)}
+.kicker.brand{border-top-color:var(--brand)}
+.kicker.dashed{border-top-style:dashed}
+
+/* Rows: restate grid-template-columns per diagram. Content columns alternate
+   with --gutter columns that hold a chevron or an SVG connector. */
+.row{display:grid;gap:0 0;align-items:stretch}
+.row > .card{min-width:0}
+.cols3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:13px}
+.cols4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.cols6{display:grid;grid-template-columns:repeat(6,1fr);gap:11px}
+
+/* ── Cards: a headline, 2–3 plain-weight bullets, optional state footer ───── */
+.card{border:1px solid var(--ink);border-radius:4px;background:var(--paper);
+      padding:14px 13px 12px;display:flex;flex-direction:column}
+.card.gate{background:var(--gate-tint);border-left:7px solid var(--gate)}
+.card.brand{background:var(--brand-tint);border:1.5px solid var(--brand)}
+.card.muted{background:var(--muted)}
+.card.aside{border-style:dashed}
+.card h4{font-size:15px;line-height:1.2;margin-bottom:10px}
+.card ul{list-style:none;display:flex;flex-direction:column;gap:8px}
+.card li{font-size:12px;font-weight:400;line-height:1.32;padding-left:12px;position:relative}
+.card li::before{content:"";position:absolute;left:0;top:5.5px;width:5px;height:5px;
+                 background:var(--ink);border-radius:50%}
+.card p{font-size:12px;font-weight:400;line-height:1.35}
+code{font-family:var(--mono);font-size:.92em;font-weight:400}
+.num{width:25px;height:25px;border-radius:50%;background:var(--ink);color:var(--paper);
+     font-size:13.5px;display:flex;align-items:center;justify-content:center;
+     margin-bottom:9px;flex:0 0 auto}
+.card.gate .num{background:var(--gate);color:var(--ink)}
+.card.brand .num{background:var(--brand)}
+.state{margin-top:auto;padding-top:8px;border-top:1px solid var(--ink);font-size:10.5px;
+       letter-spacing:.06em;text-transform:uppercase;display:flex;align-items:center;gap:6px}
+.dot{width:8px;height:8px;border-radius:50%;border:1px solid var(--ink);background:var(--paper);flex:0 0 auto}
+.dot.gate{background:var(--gate)}
+.dot.brand{background:var(--brand);border-color:var(--brand)}
+.phrase{font-family:var(--mono);font-size:12px;background:var(--paper);border:1.5px solid var(--ink);
+        border-radius:3px;padding:6px 9px;white-space:nowrap;align-self:flex-start}
+.big{font-size:42px;line-height:.94;letter-spacing:-.03em}        /* a by-the-numbers tile */
+.big + em{font-style:normal;font-size:12.5px;line-height:1.2;margin-top:5px;display:block}
+
+/* ── Groups: a bordered container of nodes, for the journey framing ────────── */
+.group{border:1.5px solid var(--ink);padding:13px 15px 14px;display:flex;flex-direction:column;min-width:0}
+.group.brand{border-color:var(--brand)}
+.group h3{font-size:12.5px;letter-spacing:.07em;text-transform:uppercase;margin-bottom:10px;
+          display:flex;align-items:center;gap:9px;flex:0 0 auto}
+.group h3 .num{margin:0;width:22px;height:22px;font-size:12px;background:var(--brand)}
+.verb{font-size:10.5px;text-transform:none;letter-spacing:0;border:1px solid var(--ink);
+      border-radius:99px;padding:2px 9px;margin-left:auto}
+.subhead{font-size:10px;letter-spacing:.1em;text-transform:uppercase;margin:2px 0 8px;
+         display:flex;align-items:center;gap:8px}
+.subhead::after{content:"";flex:1;height:1px;background:var(--ink)}
+.vstack{flex:1 1 auto;display:flex;flex-direction:column;justify-content:center;gap:9px;min-height:0}
+.grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:9px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+.node{border:1px solid var(--ink);border-radius:4px;background:var(--paper);padding:9px 13px 10px;text-align:center}
+.node b{display:block;font-size:14px;line-height:1.2}
+.node span{display:block;font-size:11.5px;font-weight:400;line-height:1.35;margin-top:4px}
+.node.brand{background:var(--brand-tint);border:1.5px solid var(--brand)}
+.node.gate{background:var(--gate-tint);border-left:7px solid var(--gate);text-align:left}
+.node.muted{background:var(--muted)}
+.node.aside{border-style:dashed;text-align:left}
+
+/* ── Connectors ─────────────────────────────────────────────────────────────
+   Chevron: the default between cards in a row. */
+.chev{display:flex;align-items:center;justify-content:center}
+.chev svg{width:24px;height:24px}
+/* SVG gutter: for fan-out or a labelled edge. viewBox 0 0 100 100 with
+   preserveAspectRatio="none" makes x/y percentages of the cell. */
+.conn{position:relative}
+.conn svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.conn svg > path,.conn svg > line{fill:none;stroke:var(--ink);stroke-width:1.5;vector-effect:non-scaling-stroke}
+.conn svg > .brand{stroke:var(--brand);stroke-width:2.5}
+.conn svg > .dashed{stroke-dasharray:5 4}
+.elabel{position:absolute;transform:translate(-50%,-50%);background:var(--paper);
+        padding:0 4px;font-size:11.5px;white-space:nowrap}
+</style>
+</head>
+<body style="--canvas-h:0">
+<!-- ANTIPATTERN. Renders, and is unreadable. Four failures, each labelled.
+     examples/overlap-fixed.html is the same diagram after the QA loop. -->
+<div class="brand-bar"></div>
+<div class="hd">
+  <h1>How the scheduler feeds the worker pool</h1>
+  <p>Four things that render fine and read badly.</p>
+</div>
+<div class="canvas">
+  <div class="section grow">
+    <div class="row" style="grid-template-columns:260px 120px 1fr;flex:1 1 auto">
+
+      <div class="group" style="grid-column:1">
+        <h3>Scheduler</h3>
+        <div class="vstack">
+          <div class="node gate"><b>Scheduler</b><span>Cuts the backlog into batches</span></div>
+        </div>
+      </div>
+
+      <div class="conn" style="grid-column:2">
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none">
+          <defs><marker id="arw" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#000"/></marker></defs>
+          <!-- FAIL 1: x2 past 100 leaves the gutter (svg has overflow:visible), so
+               the line runs through the group border and across a node's text. -->
+          <line x1="2" y1="30" x2="185" y2="30" marker-end="url(#arw)"/>
+          <!-- FAIL 2: a back-edge from downstream to upstream, drawn as a long arc
+               that crosses the forward line. Cycles are the top collision cause. -->
+          <path d="M98,86 C 60,86 40,58 2,58" marker-end="url(#arw)"/>
+        </svg>
+        <!-- FAIL 3: no paper background behind the label, and it is a sentence,
+             so the connector line reads straight through the words. -->
+        <span class="elabel" style="left:50%;top:30%;background:transparent">hands the batch off to the worker pool</span>
+      </div>
+
+      <!-- FAIL 4: a fixed height on a group clips whatever does not fit. -->
+      <div class="group" style="grid-column:3;height:150px;overflow:hidden">
+        <h3>Workers</h3>
+        <div class="subhead">Pool</div>
+        <div class="grid2">
+          <div class="node"><b>Ingest Worker</b><span>pulls raw events</span></div>
+          <div class="node"><b>Transform Worker</b><span>normalises them</span></div>
+          <div class="node"><b>Publish Worker</b><span>writes the table</span></div>
+          <div class="node"><b>Retry Worker</b><span>replays failures</span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,6 +1,6 @@
 [project]
 name = "google-docs"
-version = "0.1.0"
+version = "2026.10.0811"
 description = "MCP server for Google Docs CRUD, tabs, find/replace, and safety controls"
 readme = "README.md"
 requires-python = ">=3.11"

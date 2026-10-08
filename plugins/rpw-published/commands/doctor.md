@@ -1,89 +1,63 @@
 ---
 name: rpw-published-doctor
-description: Validate your development environment — checks all required tools and offers install help. Start here.
+description: Validate the tools required by the public RPW plugin and offer install help.
 aliases:
   - getting-started
   - start-here
 ---
 
-# /doctor - Runtime & Environment Health Check
+# /doctor — public plugin health check
 
-Validate that the runtime and the tools/plugins it expects are healthy. This is the
-recommended first command for new users.
+Validate a fresh RPW Marketplace installation without assuming the source monorepo or any private plugin exists.
 
-Treat everything typed after `/doctor` as optional context; the command behavior is fixed.
+Treat everything typed after `/doctor` as optional context. Run read-only checks yourself; do not ask the user to paste command output.
 
-## What it reports
+## Checks
 
-The **runtime doctor** (`rpw_runtime.doctor`, #153) owns the health report. Its core is
-**harness-neutral** and works with no Claude plugin present:
+Capture the exit code and version for each command:
 
-- `runtime_version`, `graph_version`, `source_git_sha`
-- `host_adapter` — `claude-code` / `cursor` / `headless` / `codex` / `opencode` / `unknown`
-- **Required stack** status (`superpowers`, `code-context`, `context-mode`, `rpw-published`, `rpw-private`)
-- **MCP health** — per-server config/env readiness (env-file presence + required key **names**; never values; no network)
+| Tool | Check | Required for | Install help |
+|---|---|---|---|
+| `git` | `git --version` | Version control and worktrees | <https://git-scm.com/downloads> |
+| `gh` | `gh --version` and `gh auth status` | Issues, claims, and pull requests | <https://cli.github.com> |
+| `claude` | `claude --version` | Plugin commands and shipped agents | `npm install -g @anthropic-ai/claude-code` |
+| `uv` | `uv --version` | Python-based skills and MCP servers | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| `node` | `node --version` | Claude Code and JavaScript skills | <https://nodejs.org> |
+| `make` | `make --version` | Repositories whose gate uses Make | Xcode CLT: `xcode-select --install` |
 
-When `host_adapter == claude-code`, it additionally attaches the **plugin-freshness**
-add-on: per-plugin source vs marketplace vs newest-cached version, and the cache path.
-
-## Execution
-
-Run these steps yourself (read-only — do not modify settings, `.env`, or git state).
-
-### 1. Run the runtime doctor
+Then run:
 
 ```bash
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-if [ -d "$ROOT/libs/rpw_runtime" ]; then
-  ( cd "$ROOT/libs/rpw_runtime" && uv run python -m rpw_runtime.doctor --repo-root "$ROOT" )
-else
-  echo "runtime doctor unavailable here (no libs/rpw_runtime checkout) — running CLI-tool checks only"
-fi
+claude plugin marketplace list
+claude plugin list
 ```
 
-The doctor prints the report (runtime/provenance, host, required stack, MCP health,
-plugin freshness when on Claude Code, and an **Actions Needed** list). Add `--json` for a
-machine-readable record (suitable for receipts / eval traces). Pass `--host <name>` to
-override host detection.
+Confirm that:
 
-### 2. CLI tool checks (host-neutral)
+- marketplace `rpw-agent-marketplace` is registered;
+- plugin `rpw-published@rpw-agent-marketplace` is enabled;
+- the installed plugin reports no load error.
 
-The runtime doctor covers the runtime; these confirm the host toolchain. For each, capture
-exit code + version:
-
-| Tool | Check | Purpose | Install help |
-|------|-------|---------|--------------|
-| `git` | `git --version` | Version control | https://git-scm.com/downloads |
-| `make` | `make --version` | Makefile-first workflow | Xcode CLT: `xcode-select --install` |
-| `uv` | `uv --version` | Python package mgmt (runs the doctor) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| `gh` | `gh --version` | GitHub CLI (issues/PRs) | https://cli.github.com |
-| `node` | `node --version` | Node runtime (needed by `claude` CLI) | https://nodejs.org or `brew install node` |
-| `claude` | `claude --version` | Claude Code CLI (only relevant on the claude-code host) | `npm install -g @anthropic-ai/claude-code` |
+`chrome-devtools-mcp` is optional. Report it as optional and absent unless browser automation is requested; never mark the RPW plugin unhealthy only because it is missing.
 
 ## Output
 
-Present the runtime doctor's report, then the CLI-tool table, then a one-line health
-summary (e.g. "runtime 0.1.0 · host claude-code · 2/5 stack · 9/10 MCP · 2/2 plugins fresh
-· 6/7 tools"). If the **Actions Needed** list is non-empty, ask the user whether they'd
-like help with any item before doing anything.
+Present:
 
-### Plugin cache behavior (mention only if freshness flags a `cache-stale` plugin)
+1. a compact tool table with `ok`, `missing`, or `auth needed`;
+2. marketplace and plugin status;
+3. one-line overall verdict;
+4. an **Actions needed** list with exact install or login commands.
 
-Claude Code caches plugin files at `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`
-and keys the cache by version string. If the version string is unchanged, the cache is not
-refreshed even when source changes. To refresh a stale plugin, in a **new session**:
+Do not claim to inspect an unpublished runtime, private plugin, or MCP credential store. Ask before running any install, login, or settings-changing command.
 
-```
+## Cache recovery
+
+If the plugin is installed but stale or failed to load, recommend this in a new session:
+
+```text
 /plugin marketplace update rpw-agent-marketplace
 /plugin install rpw-published@rpw-agent-marketplace
 ```
 
-`rpw-private` is a native dependency of `rpw-published` and auto-installs.
-
-## Scope and Safety
-
-- Read-only — it inspects state but modifies nothing.
-- The MCP health check reports env-file presence and required key **names** only — never
-  secret values — and performs no network calls (live MCP reachability is out of scope).
-- Install/enable actions require explicit user confirmation before execution.
-- Do not modify `.env` files, settings, or git state.
+Claude Code caches plugins by marketplace, plugin name, and version. If reinstalling the same version does not refresh it, uninstall that plugin version first, then install it again. Do not delete unrelated cache directories.

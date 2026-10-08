@@ -1,6 +1,6 @@
 ---
 name: configure-cursor-build
-description: Configure Cursor with the /build command from rpw-published. Use when setting up Cursor to use the build workflow, or when the user asks to add/configure the build command in Cursor.
+description: Configure Cursor with the /build command from rpw-published, and explain the `.cursor/` files an Omnigent Cursor session writes into a worktree. Use when setting up Cursor to use the build workflow, when the user asks to add/configure the build command in Cursor, or when a Cursor session leaves `?? .cursor/` in `git status`.
 ---
 
 # Configure Cursor with /build
@@ -52,6 +52,20 @@ Cursor does not yet natively support the same plugin command hooks as Claude Cod
 ## Future State
 
 Ideally Cursor will directly support the same plugin/hook mechanism the build command uses. When that happens, this skill can be simplified to: "Install the rpw-published plugin; Cursor will load the build command automatically."
+
+## A Cursor session left `.cursor/` in my worktree
+
+That is **not** this skill's linking step and **not** written by anything in this
+repo. The upstream Omnigent Cursor-native bridge writes `.cursor/mcp.json` and
+`.cursor/hooks.json` into whatever workspace the session opens, with machine-local
+absolute paths baked in — never commit them.
+
+Before you "fix" it here, read
+[references/bridge-hygiene.md](references/bridge-hygiene.md): it names the exact
+upstream writers, the ephemeral bridge dir those files should live in, why Cursor
+CLI forces them in-tree today, the live check
+(`uv run pytest tests/test_cursor_bridge_hygiene.py -q`), and why an ignore rule
+is a suppression rather than the fix. Tracking issue: #1128.
 
 ## Related
 

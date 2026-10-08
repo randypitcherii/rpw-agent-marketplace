@@ -1,3 +1,8 @@
+---
+name: activity-context
+description: Analyze recent repository activity and preserve useful context
+---
+
 # /activity-context - Context-Mode Activity Research Pattern
 
 Run a compact activity-research workflow for high-volume sources (HN/GitHub style)

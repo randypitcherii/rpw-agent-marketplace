@@ -1,4 +1,4 @@
-"""Central registry of MCP servers in rpw-published and rpw-private, and how to configure each.
+"""Central registry of MCP servers shipped by rpw-published and how to configure each.
 
 Each server entry declares an ordered list of credential `sources`. At setup
 time, the /mcp-setup skill tries each source in order and uses the first
@@ -22,39 +22,52 @@ resolve any declared source — the user fills in literal values in dev.env.
 
 PLUGIN_NAME = "rpw_mcp"  # used to compose secret scope names: <user>_rpw_mcp
 
-SERVERS: dict[str, dict] = {
-    "slack": {
-        "sources": [
-            {
-                "type": "uc_proxy",
-                "connection_name": "slack",
-            },
-            {
-                "type": "databricks_secrets",
-                "secret_map": {"slack_bot_token": "SLACK_BOT_TOKEN"},
-            },
-        ],
+# Canonical OAuth contract for every consumer that uses *gcloud Application
+# Default Credentials*. This is separate from the gcloud user credential
+# (`gcloud auth print-access-token --account`) and UC connections. Calendar,
+# Gmail, and standalone Drive use the `google-mcp` UC connection, so are absent.
+GOOGLE_ADC_SCOPES: dict[str, dict[str, object]] = {
+    "core_identity": {
+        "credential_source": "gcloud_adc",
+        "scopes": ("openid", "https://www.googleapis.com/auth/userinfo.email"),
     },
+    "gemini-image": {
+        "credential_source": "gcloud_adc",
+        "scopes": ("https://www.googleapis.com/auth/cloud-platform",),
+    },
+    "google-docs": {
+        "credential_source": "gcloud_adc",
+        "scopes": (
+            "https://www.googleapis.com/auth/documents",
+            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/presentations",
+        ),
+    },
+    "google-tasks": {
+        "credential_source": "gcloud_adc",
+        "scopes": ("https://www.googleapis.com/auth/tasks",),
+    },
+}
+
+
+def adc_scope_union(consumers: tuple[str, ...] | list[str] | None = None) -> tuple[str, ...]:
+    """Return the deterministic required scope union for enabled ADC consumers."""
+    enabled = GOOGLE_ADC_SCOPES.keys() if consumers is None else consumers
+    scopes = set()
+    for consumer in enabled:
+        entry = GOOGLE_ADC_SCOPES[consumer]
+        if entry["credential_source"] != "gcloud_adc":
+            raise ValueError(f"{consumer} is not an ADC credential consumer")
+        scopes.update(entry["scopes"])
+    return tuple(sorted(scopes))
+
+SERVERS: dict[str, dict] = {
     "jira": {
         "sources": [
             {
                 "type": "uc_proxy",
                 "connection_name": "jira-mcp",
-            },
-        ],
-    },
-    "glean": {
-        "sources": [
-            {
-                "type": "uc_proxy",
-                "connection_name": "system_ai_agent_glean_mcp",
-            },
-            {
-                "type": "databricks_secrets",
-                "secret_map": {
-                    "glean_api_token": "GLEAN_API_TOKEN",
-                    "glean_base_url": "GLEAN_BASE_URL",
-                },
             },
         ],
     },

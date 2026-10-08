@@ -8,7 +8,6 @@ use the recursive ``tabs._find_tab_by_id``. All Google calls route through
 ``auth`` (module-qualified for a single test patch point).
 """
 
-import subprocess
 from typing import Any, Dict, List, Optional
 
 import auth
@@ -16,6 +15,15 @@ import config
 from markdown_inline import _mk_range
 from markdown_render import _insert_markdown
 from tabs import _find_tab_by_id
+
+
+def _insert_failure_details(insert_result: Dict) -> Dict[str, Any]:
+    """Extract the failure fields from an ``_insert_markdown`` envelope (#423)."""
+    return {
+        "insertError": insert_result.get("error"),
+        "apiError": insert_result.get("apiError"),
+        "batchesCompleted": insert_result.get("batchesCompleted", 0),
+    }
 
 
 def _collect_tab_image_object_ids(tab: Dict[str, Any]) -> List[str]:
@@ -69,46 +77,94 @@ def _image_destruction_refusal(doc_id: str, tab_id: str, image_ids: List[str]) -
 
 
 def create_doc(title: str, content: Optional[str] = None) -> Dict:
-    """Create a new Google Doc in the target folder."""
-    if not config.TARGET_FOLDER_ID:
-        raise RuntimeError(
-            "GDOCS_TARGET_FOLDER_ID is not set — set the env var or use run_mcp.py for env-file resolution"
-        )
+    """Create a new Google Doc in the target folder.
+
+    Returns a status envelope (#421/#423 — partial failures are surfaced, not
+    swallowed):
+      - ``created`` — doc created, moved into the target folder, content (if any) inserted.
+      - ``created_but_move_failed`` — doc exists but is in the Drive root; the move
+        into GDOCS_TARGET_FOLDER_ID failed (``moveError`` has the detail).
+      - ``created_but_content_failed`` — doc created (and moved) but the content
+        insert failed; the doc may be empty or partially written.
+      - ``created_but_move_and_content_failed`` — both of the above.
+    Partial-failure envelopes carry an ``error`` message so callers that
+    short-circuit on errors fail closed, plus the ``documentId``/``url`` since
+    the doc does exist.
+
+    GDOCS_TARGET_FOLDER_ID is optional: when it is unset the move step is
+    skipped entirely and the doc lives in the Drive root — that is plain
+    ``created``, not a failure.
+    """
     # Step 1: Create the doc via Docs API
     resp = auth.api("POST", "https://docs.googleapis.com/v1/documents", {"title": title})
     if "error" in resp:
         return resp
     doc_id = resp["documentId"]
 
-    # Step 2: Move it into the target folder via Drive API
-    token = auth.get_token()
-    # Get current parent
-    file_info = auth.api("GET", f"https://www.googleapis.com/drive/v3/files/{doc_id}?fields=parents")
-    current_parents = ",".join(file_info.get("parents", []))
-
-    # Move to target folder
-    move_cmd = [
-        "curl", "-s", "-X", "PATCH",
-        f"https://www.googleapis.com/drive/v3/files/{doc_id}?addParents={config.TARGET_FOLDER_ID}&removeParents={current_parents}",
-        "-H", f"Authorization: Bearer {token}",
-        "-H", f"x-goog-user-project: {config.QUOTA_PROJECT}",
-        "-H", "Content-Type: application/json",
-    ]
-    subprocess.run(move_cmd, capture_output=True, text=True)
-
-    # Step 3: Add content if provided
-    if content:
-        _insert_markdown(doc_id, content, index=1)
-
-    return {
+    result: Dict[str, Any] = {
+        "status": "created",
         "documentId": doc_id,
         "title": title,
         "url": f"https://docs.google.com/document/d/{doc_id}/edit",
     }
 
+    # Step 2: Move it into the target folder via Drive API — only when a target
+    # folder is configured (GDOCS_TARGET_FOLDER_ID is optional; unset = the doc
+    # stays in the Drive root, no move attempted). A failed move used to be
+    # silently ignored (curl result discarded), leaving the doc in the Drive
+    # root while the tool reported unqualified success (#421).
+    move_failed = False
+    if config.TARGET_FOLDER_ID:
+        file_info = auth.api("GET", f"https://www.googleapis.com/drive/v3/files/{doc_id}?fields=parents")
+        current_parents = ",".join(file_info.get("parents", [])) if "error" not in file_info else ""
+        move_resp = auth.api(
+            "PATCH",
+            f"https://www.googleapis.com/drive/v3/files/{doc_id}"
+            f"?addParents={config.TARGET_FOLDER_ID}&removeParents={current_parents}",
+        )
+        move_failed = isinstance(move_resp, dict) and "error" in move_resp
+        if move_failed:
+            move_err = move_resp.get("error")
+            move_msg = move_err.get("message") if isinstance(move_err, dict) else str(move_err)
+            result["moveError"] = move_err
+
+    # Step 3: Add content if provided
+    insert_failed = False
+    if content:
+        inserted = _insert_markdown(doc_id, content, index=1)
+        insert_failed = inserted.get("status") != "inserted"
+        if insert_failed:
+            result.update(_insert_failure_details(inserted))
+
+    if move_failed and insert_failed:
+        result["status"] = "created_but_move_and_content_failed"
+        result["error"] = (
+            f"Doc {doc_id} was created but is in the Drive root (move into folder "
+            f"{config.TARGET_FOLDER_ID} failed: {move_msg}) AND the content insert failed "
+            f"({result.get('insertError')}); the doc may be empty or partially written."
+        )
+    elif move_failed:
+        result["status"] = "created_but_move_failed"
+        result["error"] = (
+            f"Doc {doc_id} was created but the move into folder {config.TARGET_FOLDER_ID} "
+            f"failed — it is in the Drive root, NOT the target folder: {move_msg}"
+        )
+    elif insert_failed:
+        result["status"] = "created_but_content_failed"
+        result["error"] = (
+            f"Doc {doc_id} was created in the target folder but the content insert failed; "
+            f"the doc may be empty or partially written: {result.get('insertError')}"
+        )
+    return result
+
 
 def update_doc(doc_id: str, content: str) -> Dict:
-    """Append markdown-ish content to the end of a document."""
+    """Append markdown-ish content to the end of a document.
+
+    Returns ``status: updated`` only when every insert batch succeeded (#423);
+    on insert failure returns ``status: update_failed`` with the API error detail
+    (the append is non-destructive, but the content may be partially written).
+    """
     # Get end index
     resp = auth.api("GET", f"https://docs.googleapis.com/v1/documents/{doc_id}")
     if "error" in resp:
@@ -116,7 +172,18 @@ def update_doc(doc_id: str, content: str) -> Dict:
     body_content = resp.get("body", {}).get("content", [])
     end_index = body_content[-1].get("endIndex", 1) - 1 if body_content else 1
 
-    _insert_markdown(doc_id, content, index=end_index)
+    inserted = _insert_markdown(doc_id, content, index=end_index)
+    if inserted.get("status") != "inserted":
+        return {
+            "status": "update_failed",
+            "documentId": doc_id,
+            "url": f"https://docs.google.com/document/d/{doc_id}/edit",
+            "error": (
+                f"Appending content to doc {doc_id} failed; the content may be "
+                f"partially written: {inserted.get('error')}"
+            ),
+            **_insert_failure_details(inserted),
+        }
     return {
         "status": "updated",
         "documentId": doc_id,
@@ -137,7 +204,8 @@ def delete_doc(doc_id: str) -> Dict:
 
 
 def add_tab(doc_id: str, tab_name: str, content: Optional[str] = None,
-            parent_tab_id: Optional[str] = None, icon_emoji: Optional[str] = None) -> Dict:
+            parent_tab_id: Optional[str] = None, icon_emoji: Optional[str] = None,
+) -> Dict:
     """Add a named tab (or sub-tab if parent_tab_id is given) to a Google Doc."""
     tab_props: Dict[str, Any] = {"title": tab_name}
     if parent_tab_id:
@@ -176,9 +244,18 @@ def add_tab(doc_id: str, tab_name: str, content: Optional[str] = None,
         "url": f"https://docs.google.com/document/d/{doc_id}/edit",
     }
 
-    # Add content to the new tab if provided
+    # Add content to the new tab if provided. Surface an insert failure instead
+    # of reporting an unqualified tab_added (#423): the tab exists, but its
+    # content may be missing or partial.
     if content and new_tab_id:
-        _insert_markdown(doc_id, content, index=1, tab_id=new_tab_id)
+        inserted = _insert_markdown(doc_id, content, index=1, tab_id=new_tab_id)
+        if inserted.get("status") != "inserted":
+            result["status"] = "tab_added_but_content_failed"
+            result["error"] = (
+                f"Tab {new_tab_id} was added but writing its content failed; the tab "
+                f"may be empty or partially written: {inserted.get('error')}"
+            )
+            result.update(_insert_failure_details(inserted))
 
     return result
 
@@ -284,7 +361,6 @@ def clear_tab_content(doc_id: str, tab_id: str, allow_image_destruction: bool = 
 
 
 def write_to_tab(doc_id: str, tab_id: str, content: str,
-                 code_font: str = config.DEFAULT_CODE_FONT, bullet_preset: str = "",
                  allow_image_destruction: bool = False) -> Dict:
     """Replace a tab's content with rendered markdown.
 
@@ -292,22 +368,17 @@ def write_to_tab(doc_id: str, tab_id: str, content: str,
     yields the same visible document instead of prepending a second copy. Returns
     ``not_found`` if the tab does not exist (nothing is inserted).
 
-    bullet_preset: optional Docs API bulletPreset for unordered lists (#170). Empty =
-    default disc. Validated at this boundary so an unknown value returns a clean error
-    BEFORE the tab is cleared, rather than leaking a Google 400 mid-write.
-
     allow_image_destruction: if the target tab contains embedded images, the clear
     step refuses by default with ``blocked_image_destruction`` (nothing is written),
     since the rebuild would destroy them irrecoverably (#311). Pass True to overwrite
     anyway.
+
+    Error handling (#423): ``written`` is returned ONLY when every insert batch
+    succeeded. Because the tab is cleared before inserting, an insert failure is
+    destructive — the previous content is already gone — so it is reported as an
+    explicit ``status: cleared_but_write_failed`` envelope naming the loss (with the
+    Google API error and how many batches landed), never as success.
     """
-    if bullet_preset and bullet_preset not in config.VALID_BULLET_PRESETS:
-        return {
-            "error": (
-                f"Invalid bullet_preset '{bullet_preset}'. "
-                f"Valid presets: {', '.join(sorted(config.VALID_BULLET_PRESETS))}"
-            )
-        }
     cleared = clear_tab_content(doc_id, tab_id, allow_image_destruction=allow_image_destruction)
     if cleared.get("status") == "not_found":
         return {"status": "not_found", "documentId": doc_id, "tabId": tab_id}
@@ -315,8 +386,26 @@ def write_to_tab(doc_id: str, tab_id: str, content: str,
         return cleared
     if "error" in cleared:
         return cleared
-    _insert_markdown(doc_id, content, index=1, tab_id=tab_id, code_font=code_font,
-                     bullet_preset=bullet_preset)
+    inserted = _insert_markdown(doc_id, content, index=1, tab_id=tab_id)
+    if inserted.get("status") != "inserted":
+        # Fail closed on the destructive ordering: the clear already ran, so the
+        # tab's previous content is gone and the new content is absent or partial.
+        # Name the loss explicitly instead of stamping "written" (#423).
+        batches_done = inserted.get("batchesCompleted", 0)
+        return {
+            "status": "cleared_but_write_failed",
+            "documentId": doc_id,
+            "tabId": tab_id,
+            "url": f"https://docs.google.com/document/d/{doc_id}/edit",
+            "error": (
+                f"Tab {tab_id} was cleared but inserting the new content failed after "
+                f"{batches_done} successful batch(es) — the tab's previous content is lost "
+                f"and it is now {'partially written' if batches_done else 'empty'}. "
+                f"Re-run the write or restore from your source. Insert error: "
+                f"{inserted.get('error')}"
+            ),
+            **_insert_failure_details(inserted),
+        }
     return {
         "status": "written",
         "documentId": doc_id,

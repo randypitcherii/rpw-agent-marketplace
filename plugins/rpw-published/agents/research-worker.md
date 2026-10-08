@@ -1,20 +1,21 @@
 ---
 name: research-worker
-description: Use this agent to fetch, read, and summarize a specific source or subtopic as part of a larger research effort. Lightweight and focused — one source, one summary. Examples:
+description: >-
+  Use this agent to fetch, read, and summarize a specific source or subtopic as part of a larger research effort. Lightweight and focused — one source, one summary. Examples:
 
-<example>
-Context: Research Lead dispatching source investigation
-user: "Read the Claude Code plugin docs and summarize the agent file format"
-assistant: "I'll use a research-worker agent to read and summarize that specific source."
-<commentary>Single-source investigation triggers research-worker for focused reading and summarization.</commentary>
-</example>
+  <example>
+  Context: Research Lead dispatching source investigation
+  user: "Read the Claude Code plugin docs and summarize the agent file format"
+  assistant: "I'll use a research-worker agent to read and summarize that specific source."
+  <commentary>Single-source investigation triggers research-worker for focused reading and summarization.</commentary>
+  </example>
 
-<example>
-Context: Quick lookup needed
-user: "Check the git history for when worktree support was added"
-assistant: "I'll use a research-worker agent to search git history for that information."
-<commentary>Focused lookup tasks trigger research-worker.</commentary>
-</example>
+  <example>
+  Context: Quick lookup needed
+  user: "Check the git history for when worktree support was added"
+  assistant: "I'll use a research-worker agent to search git history for that information."
+  <commentary>Focused lookup tasks trigger research-worker.</commentary>
+  </example>
 
 model: sonnet
 color: green

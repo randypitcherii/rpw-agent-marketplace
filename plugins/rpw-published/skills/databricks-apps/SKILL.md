@@ -150,6 +150,52 @@ Key details:
 - **uv 0.10.2** is pre-installed on the Databricks Apps runtime (Ubuntu 22.04, Python 3.10 system, 3.11 in .venv)
 - `DATABRICKS_APP_PORT` is auto-injected by the platform (defaults to 8000 locally)
 
+## Unity Catalog Resource Bindings (Volumes, tables, models)
+
+An App's UC resources are bound by **three-part name, captured at bind time**. Renaming the
+securable does not follow the binding — the App keeps pointing at a name that no longer
+exists, and the failure surfaces as broken user-facing behavior long after the rename looked
+successful. Three invariants:
+
+### 1. Renames do not rewrite bindings — redeploy the full three-part name
+
+A catalog, schema, or volume rename leaves every existing App resource binding stale. The
+rename is **not** the end of the job:
+
+1. Update the binding in `databricks.yml` / the App's resource config to the **new
+   three-part name** (`<catalog>.<schema>.<volume>` — never a partial or inherited name).
+2. **Redeploy the App.** A binding change is not live until a deployment applies it.
+3. Verify per invariant 3 below.
+
+Same rule for anything else bound by name: UC tables, registered models, serving endpoints,
+secret scopes.
+
+### 2. UC Volumes are a Files API resource, not a guaranteed local mount
+
+Inside a Databricks App, a bound Volume is reached through the **Files API**
+(`w.files.upload` / `download` / `list_directory_contents`). A `/Volumes/<catalog>/<schema>/<volume>`
+path **is not guaranteed to exist as a local filesystem mount** in the App container.
+
+🚫 **Never validate a binding with a filesystem check.** `os.path.isdir("/Volumes/...")`,
+`Path(...).exists()`, or an equivalent guard at startup fails on a perfectly healthy binding.
+A startup guard like that took a production App to 502 — the binding was fine; the mount
+simply was not there.
+
+✅ Validate a Volume binding by **doing a Files API operation** against it (list the
+directory, or read back a probe object) and treating the API's own error as the signal.
+Better still, validate lazily on first use rather than crashing the container at startup:
+a healthy App that reports a degraded feature beats a hard-down App.
+
+### 3. Verify through the exact user-facing endpoint that failed
+
+App status `RUNNING` and "deployment succeeded" say the container started, nothing more.
+Neither one exercises a resource binding.
+
+After any binding change, hit the **specific user-facing path that originally broke** —
+resume the conversation that lost its history, load the page that 500'd, re-request the
+artifact that 404'd — and confirm the real response. Deploy status is a precondition for
+verification, never a substitute for it.
+
 ## Lakebase (Postgres) Connectivity
 
 ### Auto-Injected Environment Variables
@@ -200,6 +246,9 @@ password = OAuth JWT from /oidc/v1/token
 | Hardcoding workspace URLs | Breaks across environments | Use `DATABRICKS_HOST` env var |
 | Skipping `--frozen` in app.yaml | Non-reproducible installs | Always use `uv sync --frozen` in production |
 | Scaffolding from scratch | Misses bash-over-REST patterns | Clone the starter template |
+| Renaming a catalog/schema/volume and stopping | Bindings keep the old three-part name | Update the binding to the new three-part name, then redeploy |
+| `os.path.isdir("/Volumes/...")` as a binding guard | Volumes are a Files API resource, not a guaranteed mount | Probe with a Files API call; validate lazily, don't crash at startup |
+| Treating `RUNNING` / "deploy succeeded" as verification | Neither exercises a resource binding | Re-request the exact user-facing endpoint that failed |
 
 ## Iteration Philosophy
 

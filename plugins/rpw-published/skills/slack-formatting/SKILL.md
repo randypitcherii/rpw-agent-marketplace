@@ -87,6 +87,9 @@ characters and are unreadable. Instead:
 
 ## Related
 
+- Structure, ordering, and length of the message content (problem-first, ≤10-line
+  parent, thread overflow): the `communication` skill — this file covers only
+  mrkdwn rendering mechanics.
 - Rendering Google Docs / customer prose (real Markdown + headings): use the
   `doc-styling` skill instead — its rules are the opposite of these.
 - Choosing the target channel/user or opening a group DM is out of scope here; that's

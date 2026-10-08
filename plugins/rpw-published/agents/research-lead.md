@@ -1,20 +1,21 @@
 ---
 name: research-lead
-description: Use this agent to plan and execute multi-source research, synthesizing findings into a structured summary. Dispatches research workers for parallel source exploration. Examples:
+description: >-
+  Use this agent to plan and execute multi-source research, synthesizing findings into a structured summary. Dispatches research workers for parallel source exploration. Examples:
 
-<example>
-Context: Build planning needs background research
-user: "Research how other CLI tools handle plugin versioning"
-assistant: "I'll use the research-lead agent to plan the research and synthesize findings from multiple sources."
-<commentary>Multi-source research requests trigger research-lead for structured investigation.</commentary>
-</example>
+  <example>
+  Context: Build planning needs background research
+  user: "Research how other CLI tools handle plugin versioning"
+  assistant: "I'll use the research-lead agent to plan the research and synthesize findings from multiple sources."
+  <commentary>Multi-source research requests trigger research-lead for structured investigation.</commentary>
+  </example>
 
-<example>
-Context: Technical decision needs evidence
-user: "What are the tradeoffs between worktree isolation and branch-based isolation?"
-assistant: "I'll use the research-lead agent to investigate tradeoffs across documentation and prior art."
-<commentary>Technical analysis requiring multiple sources triggers research-lead.</commentary>
-</example>
+  <example>
+  Context: Technical decision needs evidence
+  user: "What are the tradeoffs between worktree isolation and branch-based isolation?"
+  assistant: "I'll use the research-lead agent to investigate tradeoffs across documentation and prior art."
+  <commentary>Technical analysis requiring multiple sources triggers research-lead.</commentary>
+  </example>
 
 model: opus
 color: green
@@ -33,8 +34,8 @@ You are a Research Lead. You plan research, dispatch Research Workers for parall
 Use parallel tool calls to dispatch Research Workers:
 ```
 Agent(
-  name: "rw-{topic}-{n}",
-  description: "{subtopic summary}",
+  subagent_type: "rpw-published:research-worker",
+  description: "rw-{topic}-{n}: {subtopic summary}",
   model: "sonnet",
   run_in_background: true,
   prompt: "Research: {subtopic}\nSources: {source list}\nReturn: {expected format}"

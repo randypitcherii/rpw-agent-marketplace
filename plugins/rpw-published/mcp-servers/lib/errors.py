@@ -71,6 +71,29 @@ def looks_like_missing_profile(text: str) -> bool:
     return any(marker in lower for marker in _DATABRICKS_MISSING_PROFILE_MARKERS)
 
 
+# Substrings that indicate a *transient* Databricks token-refresh failure caused
+# by macOS keyring contention (#428). Concurrent `databricks` CLI / SDK token
+# refreshes racing on the keychain-backed token cache surface as e.g.
+# "forced token refresh: cache update: exit status 45" — exit 45 is the Go CLI
+# failing a macOS Keychain write while another process holds it. These are
+# retryable: the same call succeeds once the competing keychain access finishes.
+# Compared case-insensitively.
+_KEYRING_RACE_MARKERS = (
+    "exit status 45",
+    "cache update:",
+    "user interaction is not allowed",
+    "errsecauthfailed",
+)
+
+
+def looks_like_keyring_race(text: str) -> bool:
+    """True if the error text matches the macOS keyring token-cache race (#428)."""
+    if not text:
+        return False
+    lower = text.lower()
+    return any(marker in lower for marker in _KEYRING_RACE_MARKERS)
+
+
 def databricks_auth_expired(profile: str) -> CredentialResolutionError:
     return CredentialResolutionError(
         f"Auth expired for Databricks profile '{profile}'",
