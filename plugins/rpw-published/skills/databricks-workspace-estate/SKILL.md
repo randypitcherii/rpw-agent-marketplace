@@ -123,10 +123,11 @@ model catalog, or prior use never substitutes for consent.
 The rpw proxy already implements the two-gate registry and account-token members:
 
 ```bash
-python -m rpw_llm_proxy.pool_estate
-python -m rpw_llm_proxy.pool_estate --approve-account "<account-id>"
-python -m rpw_llm_proxy.pool_estate --approve "<account-profile>/<deployment-name>"
-python -m rpw_llm_proxy.pool_estate --deny "<member-name>"
+pe() { uv run --directory libs/rpw_llm_proxy python -m rpw_llm_proxy.pool_estate "$@"; } # repo root
+pe
+pe --approve-account "<account-id>"
+pe --approve "<account-profile>/<deployment-name>"
+pe --deny "<member-name>"
 ```
 
 `RPW_DATABRICKS_ACCOUNTS` narrows account profiles; it cannot add access. Review with

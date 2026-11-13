@@ -1,5 +1,5 @@
 {
-  "_comment": "Backends the `rpw` aggregator fronts (#2215). Same shape as .mcp.json mcpServers; this is the list to edit when adding a server. The plugin's .mcp.json holds only the aggregator.",
+  "_comment": "This plugin's MCP backends (#2215, #2623). Same shape as .mcp.json mcpServers; this is the list to edit when adding a server. rpw-published's single `rpw` entry serves every installed plugin's list through mcporter (ADR-2026-10-28).",
   "mcpServers": {
     "google-tasks": {
       "command": "uv",

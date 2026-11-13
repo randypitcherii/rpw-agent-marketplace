@@ -8,7 +8,7 @@ description: Use to file a GitHub issue and dispatch it to a fresh agent in its 
 Turn work into a GitHub issue plus a fresh isolated git worktree with an agent already
 running in it as a **durable omnigent session** — one that outlives the window that
 started it. Named for the function, not the substrate: the substrate moved once already
-(Superset → omnigent, ADR-2026-08-14 (Omnigent dispatch)).
+(Superset → omnigent, ADR-2026-08-14).
 
 **This file is the decision surface; the mechanics live beside it** (#592) — open a
 companion when you reach its step:
@@ -20,10 +20,11 @@ companion when you reach its step:
 | [`session-lifecycle.md`](session-lifecycle.md) | where you are, rename, close, teardown, self-termination |
 | [`reference.md`](reference.md) | full REST/tool surface, measured behavior, Superset→omnigent mapping, parity gaps |
 | [`hand-back-template.md`](hand-back-template.md) | for an orchestrator handing a "go dispatch this" ask back to this skill (#1802) |
+| [`completion-handoff.md`](completion-handoff.md) | close-out format; `rpw sessions classify` is its proof (#2343, #2449) |
 
 ## When to invoke
 
-See the frontmatter triggers. Rename / close / clean-up → [`session-lifecycle.md`](session-lifecycle.md).
+Rename / close / clean-up → [`session-lifecycle.md`](session-lifecycle.md).
 Already have an issue number → [Next-task fast path](#next-task-fast-path-dispatch-an-existing-issue).
 Skip when the user just wants an issue (use `gh`) or the fix is quick inline.
 
@@ -75,12 +76,7 @@ Four decisions are yours before you run them:
   field, so its brief must carry the block or the child works in the parent's tree.
 - **Env files** — a fresh worktree carries no gitignored `.env` / `dev.env`;
   provision them before the agent runs (#496).
-- **Permissions, for an unattended launch** — supervisor-grade sessions take
-  `terminal_launch_args: ["--permission-mode","bypassPermissions"]` (path A) or
-  `--dangerously-skip-permissions` (path C). `acceptEdits` is not enough: it gates edit
-  tools only, so the session still wedges on its first `mcp__omnigent__sys_*` call with
-  nobody to answer (#1761). A managed-policy host makes every one of these flags a silent
-  no-op — Step 1's host check and the write probe are what prove otherwise (#1777).
+- **Harness** — default `pi-native`, no `terminal_launch_args` (#2491); `claude-native` supervisors need `bypassPermissions` (`acceptEdits` wedges on the first MCP call, #1761); managed policy makes flags no-ops (#1777). See [`dispatch-mechanics.md`](dispatch-mechanics.md#permissions-for-an-unattended-launch).
 
 **On path A the launch is two calls, never one** — `POST /v1/sessions` then
 `POST /v1/sessions/{id}/events`. A runner binds asynchronously, so at create time
@@ -109,7 +105,7 @@ the session-title convention (`docs/process/agent-session-titles.md`).
 
 Issue #+URL, worktree path, branch, `conversation_id` + title, **delivery mode**, Step
 5 evidence (tool calls actually observed — not "dispatched ok"), claim state, and
-teardown commands from [`session-lifecycle.md`](session-lifecycle.md). Open the report with the five-state status line ([`../communication/references/status-updates.md`](../communication/references/status-updates.md)).
+teardown commands from [`session-lifecycle.md`](session-lifecycle.md). Open with the five-state status line ([`../communication/references/status-updates.md`](../communication/references/status-updates.md)). A session's own close-out follows [`completion-handoff.md`](completion-handoff.md).
 
 ## Next-task fast path (dispatch an existing issue)
 
@@ -117,11 +113,12 @@ Work that's **already an issue** skips the authoring ceremony — Steps 2–3 co
 goal/approach/test come from the issue body (`gh issue view $ISSUE`). **Reuse the
 previous dispatch's choices as defaults** (launch path, host, agent, model, base
 branch, delivery mode) — carry them forward silently, re-confirm only changes. Then run
-Steps 4–7 as normal (**never skip the Step 5 gate**). Claim before each launch:
+Steps 4–7 as normal (**never skip the Step 5 gate**). Preflight and claim before each launch (an open PR is not delivery: resume it, #2342):
 
 ```bash
-make build-honor-check ISSUE=$ISSUE   # MANDATORY — already claimed elsewhere?
-make build-claim ISSUE=$ISSUE         # pre-claim: close the spawn→build-init window
+make build-delivered-check ISSUE=$ISSUE  # MANDATORY — already merged/closed? STOP with the evidence
+make build-honor-check ISSUE=$ISSUE      # MANDATORY — already claimed elsewhere?
+make build-claim ISSUE=$ISSUE            # pre-claim: close the spawn→build-init window
 ```
 
 Claim **from inside the new worktree**, not from yours — the sentinel records the
@@ -138,15 +135,12 @@ small and sequential; a parallel wave is **wave-supervisor**.
 A dispatched headless agent runs with no human, so the brief is the **only** merge
 gate — it self-certifies and (no branch protection) auto-merges unattended
 (mechanism: [reference.md](reference.md)). **Gate (default):** brief ends "open a PR,
-then STOP". **Autonomous:** "open a PR and merge". State the mode in Step 7.
+then STOP". **Autonomous:** "open a PR and merge". State the mode in Step 7. Either mode runs its live steps: `docs/process/live-steps.md` (#2567).
 
-The dispatched agent's `make build-init` also **auto-claims** once `/build` reaches
-planning, so the pre-claim above only closes the spawn→init window (label is
-`status: in-progress`, NOT bare `in-progress`). Local sibling-worktree work stays
-invisible to `gh issue list` until pushed.
+`make build-init` also auto-claims at planning; the pre-claim closes the spawn→init window (label `status: in-progress`).
 
 ## Failure modes
 
-Full catalog — nine of them, each earned: [`failure-modes.md`](failure-modes.md). Two
+Full catalog: [`failure-modes.md`](failure-modes.md). Two
 are decisions, not diagnoses, so they stay here: on path A the launch is **both calls,
 always**, and a session that dies **twice ⇒ stop looping** and report.

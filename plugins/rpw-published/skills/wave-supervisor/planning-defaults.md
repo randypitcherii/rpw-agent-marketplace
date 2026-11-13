@@ -40,3 +40,40 @@ override is a user argument, never a supervisor judgment call.
   answer. Each parked issue owes tool-ready options, not an open-ended prompt.
   Never silently skip; never idle the fleet for one ambiguous ticket. Timing and
   queue format: [`asking-the-user.md`](asking-the-user.md).
+
+## Classifier-sensitive steps are supervisor-owned (#2421)
+
+Decide at plan time who runs a step the worker's permission classifier will
+likely deny. Three kinds:
+
+- **live applies to a server**, even a dry run;
+- **process kills**, including `WAVE_SWEEP_ARGS=--kill`. Even a plain
+  `make wave-sweep` has been denied. The worker still runs its sweep, but a
+  denial means the supervisor runs it;
+- **sandbox-escape env flags**, such as `RPW_DIAGRAM_UNSAFE_NO_SANDBOX=1`.
+
+Mark each one **supervisor-owned** in the brief's `## Task`. Use the same split as
+[long runs (#495)](dispatch-mechanics.md#long-runs-are-supervisor-owned-495): the
+worker delivers the code plus the exact command, and the supervisor runs it —
+during the wave, without asking the human. Supervisor-owned is who runs it, not a
+wait for approval: `docs/process/live-steps.md` (#2567). A
+worker that tries the step anyway spends turns on a denial and then hands it back.
+Evidence: wave #2406 had five such denials (PRs #2410, #2416, #2424).
+
+## Cheap live smokes belong to the worker (#2652)
+
+The #2421 split covers only steps the classifier will **deny**. A live smoke
+that is cheap (seconds to a few minutes, in-session), that the worker's
+classifier allows, and that is off the stop list in `docs/process/live-steps.md`
+goes in the worker's `## Task`, not on the supervisor's list. The worker runs it
+against the real API before it opens the PR and reports the result.
+
+Supervisor-owned is still right for a #2421 kind, a run that outlives a worker
+session (#495), and a step that must run from merged code. Anything else the
+supervisor holds back moves defect discovery one dispatch later.
+
+Evidence: in wave #2636 the supervisor owned every darkroom smoke. Each one
+found a defect that the worker's lenient fake had passed (PRs #2641, #2644,
+#2640), within seconds of a real call. That cost three follow-up dispatches
+and about 90 minutes of serial work. The worker-side half of this rule is the
+fake-fidelity rule in the brief's `## Gate & verification`.

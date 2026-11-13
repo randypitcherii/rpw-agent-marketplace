@@ -6,6 +6,11 @@ the host's equivalent) with real options — **not** a paragraph asking them to 
 back. The only reason to write it as prose is that the tool **blocks**, and a
 blocked supervisor is a stopped fleet.
 
+**No question tool, or a batch too big for one?** `rpw ask questions.json --no-wait`
+serves the same header/options/unblocks shape as a local page and writes answers JSON;
+poll with `rpw ask --wait <answers_path> --timeout 50` (exit 5 = pending). Schema:
+`rpw ask --example`; contract: `docs/architecture/headless-cli.md#rpw-ask`.
+
 So the rule is about *timing*, not format:
 
 | When | What you do |
@@ -47,7 +52,7 @@ Do not move status into the tool, and do not drop the report.
 | Ask it | Leave it in the report |
 |---|---|
 | **A decision with materially different outcomes** — "dependabot #746 is red behind a config migration: leave open / close / migrate now?" | **Status** — "28 issues merged, CI green", budget spent, what was abandoned, what carries forward |
-| **An action only the human can take** — "restart to load the upgraded plugins?"; "the first live run of the new command is yours" | **Anything you can decide yourself** — routine judgment calls are the supervisor's, and asking them hands your work back |
+| **An action only the human can take** — "restart to load the upgraded plugins?"; a live step on the stop list (`docs/process/live-steps.md`) | **Anything you can decide yourself** — routine judgment calls are the supervisor's, and asking them hands your work back. A live step off the stop list is yours: run it and report the result (#2567) |
 | **A parked needs-input item** — already a question with options, because parking one costs exactly that | **An FYI you want acknowledged** — that is status wearing a question mark |
 | **A scope escape a worker surfaced** (#917) — it arrives with the options it did not choose between | **The wave PR merge** — you opened it, you merge it when green (#1878); asking is the old shape |
 
@@ -65,7 +70,7 @@ question, already tool-ready. At close-out:
    *delivered*, never re-summarized into a paragraph — re-deriving it is how
    correctly-parked items got flattened back into prose.
 2. **Append the human items the wave produced after the last park** — a restart, a
-   first live run, a red check left red on purpose.
+   stop-list live step, a red check left red on purpose.
 3. **Write each answer back** to its bucket entry and to the wave issue as it
    lands, then act on it in the same session where the action is yours.
 

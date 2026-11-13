@@ -6,16 +6,15 @@ description: House standard for automation that runs with no human watching — 
 # Automation Standards
 
 Three modes — **background processes**, **localhost serving**, **scheduled jobs** — and one
-rule that outranks everything else in all three.
+rule that outranks the rest.
 
-Companion files: [launchd-reference.md](launchd-reference.md) for the macOS key-by-key
-contract and the audit checklist; [supervisor-pattern.sh](supervisor-pattern.sh) for a
-runnable watchdog skeleton.
+Companions: [launchd-reference.md](launchd-reference.md) (macOS key-by-key contract, audit
+checklist); [supervisor-pattern.sh](supervisor-pattern.sh) (runnable watchdog skeleton).
 
 ## Rule 0 — liveness is not health
 
 **A process that is alive is not a process that is serving.** The dominant failure of
-long-running automation is not a crash. It is a wedge: a connection retry loop that never
+long-running automation is a wedge, not a crash: a connection retry loop that never
 gives up, a worker thread that died inside a live process, a server holding its socket while
 every request 500s. It never exits, so:
 
@@ -23,8 +22,7 @@ every request 500s. It never exits, so:
 - The job reports `state = running`, `runs = 1`, `last exit code = (never exited)` forever.
 - Every process-level check — pid present, restart count low, exit status clean — says healthy.
 
-A twelve-hour outage produced exactly this shape: process online, service offline, all
-supervisors green the entire time.
+A twelve-hour outage had this shape: process online, service offline, supervisors green.
 
 ### The detection pattern
 
@@ -39,16 +37,17 @@ output proves the job is doing its job — and make it the *only* definition of 
    `launchctl`/`systemctl` inherits the supervisor's blind spot and will report a wedged job
    as `ok`.
 
-Probes are expensive and can hang. Rules for any probe: **time-cap it with your runtime's
+Probes are expensive and can hang. For any probe: **time-cap it with your runtime's
 native mechanism** (a `subprocess` timeout in Python, `--max-time` on curl; only pure shell
 needs the background-and-poll-`kill -0` dance, since macOS has no `timeout(1)` —
 [supervisor-pattern.sh](supervisor-pattern.sh) shows it), **rate-limit/cache it**, degrade to `unknown`
-rather than raising, and never let it block the monitor's fetch. Keep the cadence sparse —
-a probe competes with the job it measures inside the same scheduler coalition, so an
-aggressive poll worsens the starvation it exists to detect.
+rather than raising, and never let it block the monitor's fetch. Keep the cadence sparse:
+a probe competes with the job it measures in its scheduler coalition, so an aggressive
+poll worsens the starvation it detects.
 
 Absent health evidence is a state of its own: *"restart-managed, pid present, no successful
-probe for N minutes"* is **stale**, not `ok`.
+probe for N minutes"* is **stale**, not `ok`. Unasked is not no:
+[unasked-is-not-no.md](unasked-is-not-no.md).
 
 ## Rule 1 — resource classification is a required decision
 
@@ -70,7 +69,7 @@ So: **every persistent job states its resource class explicitly, with a one-line
 | launchd | `ProcessType` — `Interactive` \| `Adaptive` \| `Standard` \| `Background` | Absent ⇒ throttled. Latency-sensitive/always-on ⇒ `Interactive`. |
 | systemd | `CPUWeight`, `IOWeight`, `Nice` | Also `CPUQuota` for bulk jobs. |
 
-**Verify it took**, don't assume the file is the truth:
+**Verify it took**:
 `launchctl print gui/$(id -u)/<label> | grep 'spawn type'` must show `interactive`, not
 `daemon`.
 
@@ -79,6 +78,8 @@ So: **every persistent job states its resource class explicitly, with a one-line
 - **Supervise a child; never `exec`.** A supervisor that `exec`s becomes the job and can no
   longer act on a wedge. Point the job at the supervisor, not at the program.
 - **Restart on unhealthy, not on exit** (Rule 0).
+- **One watcher per watched resource** — check before registering a second:
+  [one-watcher-per-resource.md](one-watcher-per-resource.md).
 - **Back off on fast failure.** Exponential backoff with a cap, so an expired credential
   costs one log line every few minutes instead of a hot restart loop. Set a restart throttle
   (`ThrottleInterval`, `RestartSec`) explicitly — the platform default is seconds.
@@ -104,9 +105,8 @@ So: **every persistent job states its resource class explicitly, with a one-line
   from the web framework proves the framework is up and nothing else. Touch the database, the
   queue, the upstream token — cheaply, with a cap. Include version + git hash so drift is
   visible (see the `versioning-standards` skill).
-- **Reclaim, don't fight.** On start, if the preferred port is held, probe nearby free ports,
-  bind one, and record the bind — never loop retrying the incumbent's port. The allocation and
-  stale-record semantics are `local-ports.md`'s to define; follow it rather than this summary.
+- **Reclaim, don't fight.** If the preferred port is held at start, bind a nearby free one and
+  record it — never loop retrying the incumbent's port. `local-ports.md` owns the semantics.
 
 ## Mode C — scheduled jobs
 
@@ -115,14 +115,14 @@ So: **every persistent job states its resource class explicitly, with a one-line
 - **Keep the exit status meaningful.** `a; b` reports only `b`'s status, and blanket
   `2>/dev/null` destroys the only diagnosis you will get at 3am. Use `set -euo pipefail`,
   and let stderr reach the log.
-- **Detect missed runs from the consumer side.** Whoever depends on the output checks the
-  freshness of the run record and alarms on staleness. Nothing else notices a job that
+- **Detect missed runs from the consumer side.** Whoever depends on the output alarms on a
+  stale run record. Nothing else notices a job that
   silently stopped firing.
 - **Prevent overlap explicitly** with a lock (`flock`, or an atomic lockfile carrying the pid)
   when a run can outlast its interval. Do not rely on the scheduler's claim that it won't
   double-start.
-- **Log somewhere durable.** Not `/tmp` — it is periodically purged, so the only evidence a
-  scheduled job produces is the evidence most likely to vanish.
+- **Log somewhere durable.** Not `/tmp` — it is purged, so a scheduled job's only evidence
+  is the evidence most likely to vanish.
 
 ## Cross-cutting
 
@@ -134,13 +134,16 @@ group, then TERM that group, wait briefly, and KILL what remains. (macOS ships n
 — give the child its own group with `set -m` job control or a small POSIX `setsid` shim; a
 plain `&` child shares your group and a group-kill will miss its subprocesses.)
 
-Belt and braces: prefer **self-limiting** children (`timeout 60 …`, `stress-ng --timeout`)
-over unbounded loops, so orphans die on their own even when cleanup never runs. A leaked set
+Prefer **self-limiting** children (`stress-ng --timeout`, a counted loop) over unbounded
+loops, so orphans die even when cleanup never runs. A leaked set
 of unbounded busy loops once held a machine at load ~300 for twelve hours after its worktree
 was deleted — and that load is what triggered Rule 1's throttle chain.
 
 **What a job prints is agent context.** Hold every command it runs to the house CLI output
 contract: `docs/process/cli-output-contract.md` in `rpw-agent-marketplace`.
+
+**Moving a live-service directory?** Untracked state stays behind:
+[live-dir-cutover.md](live-dir-cutover.md) — never `rm -rf` the old path.
 
 **Log rotation is not optional.** `StandardOutPath` / `StandardErrorPath` and their
 equivalents grow forever, and a crash-looping job produces gigabytes. Cap every long-lived
@@ -149,5 +152,5 @@ not after the disk fills.
 
 ## Reviewing an existing job
 
-Run the checklist in [launchd-reference.md](launchd-reference.md). It is written to produce
-specific findings — the failure mode of a review here is generic advice.
+Run the checklist in [launchd-reference.md](launchd-reference.md). It produces specific
+findings; generic advice is how a review here fails.

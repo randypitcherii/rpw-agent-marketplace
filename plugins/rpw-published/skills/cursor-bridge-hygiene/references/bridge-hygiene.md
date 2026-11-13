@@ -76,7 +76,8 @@ live host, a tmux pane and a Cursor login.
   absolute `--bridge-dir` path still outlives the worktree that held it.
 - 🚫 **Do not add a cleanup sweep over existing worktrees.** There are ~70 on
   this machine, several belonging to running sessions.
-- ✅ **Do route the real fix upstream** via the `omnigent-contribution` skill —
+- ✅ **Do route the real fix upstream** to the upstream Omnigent project (an upstream-contribution skill, if your
+  environment installs one) —
   the same path issue #1002 uses for a native-bridge defect.
 
 ## Contents of the generated files

@@ -382,6 +382,84 @@ build_honor_check() {
   return $rc
 }
 
+# _delivered_decide <default_branch>   (reads {"issue":{...},"prs":[...]} on stdin)
+# The delivered-state verdict (#2342). Evidence only; never closes or merges.
+#   none                                   no linked PR, issue open: dispatch fresh
+#   unknown reason=<r>                     could not read GitHub: say so, proceed
+#   open-pr prs=#a,#b                      work exists but is NOT delivered: resume it
+#   delivered issue=CLOSED merged=#a       closed (merged PRs listed when found): STOP
+#   merged-pr-open-issue merged=#a         merged PR names it, issue still open: STOP
+#                                          and verify; a deliberate follow-up needs a human
+# Exit 0 dispatchable (none / unknown / open-pr), 5 already delivered.
+# A PR merged into a non-default branch (a wave branch) is work in flight, not
+# delivered. A PR found only by text search is a reference, so it is labelled as
+# such and never proves completion by itself; a CLOSED issue is the proof.
+_delivered_decide() {
+  local default_branch="${1:?Usage: _delivered_decide <default_branch>}"
+  local prog
+  prog=$(cat <<'PY'
+import json, sys
+default = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("unknown reason=unparseable-github-response"); sys.exit(0)
+issue, prs = data.get("issue"), data.get("prs")
+if not isinstance(issue, dict) or not isinstance(prs, list):
+    print("unknown reason=github-unreadable"); sys.exit(0)
+merged, merged_other, opened = [], [], []
+for pr in prs:
+    n = f"#{pr.get('number')}"
+    if pr.get("mergedAt"):
+        (merged if pr.get("baseRefName") == default else merged_other).append(n)
+    elif pr.get("state") == "OPEN":
+        opened.append(n)
+closed = issue.get("state") == "CLOSED"
+if closed:
+    ev = f" merged={','.join(merged)}" if merged else " merged=none-found (closed without a linked merged PR; confirm)"
+    print(f"delivered issue=CLOSED{ev}"); sys.exit(5)
+if merged:
+    print(f"merged-pr-open-issue merged={','.join(merged)} (issue still open: verify the PR covers it)")
+    sys.exit(5)
+live = opened + merged_other
+if live:
+    extra = f" merged-to-non-default={','.join(merged_other)}" if merged_other else ""
+    print(f"open-pr prs={','.join(opened) or 'none'}{extra} (not delivered: resume, do not restart)")
+    sys.exit(0)
+print("none"); sys.exit(0)
+PY
+)
+  python3 -c "$prog" "$default_branch"
+}
+
+# build_delivered_check <issue> — preflight before starting or resuming work.
+build_delivered_check() {
+  local issue="${1:?Usage: build_delivered_check <issue>}"
+  if ! command -v "${GH:-gh}" >/dev/null 2>&1; then
+    echo "build-claim: delivered-check #$issue: unknown reason=gh-unavailable (proceeding unverified)"
+    return 0
+  fi
+  local iv prs payload verdict rc
+  iv="$(_gh issue view "$issue" --json state,stateReason,url 2>/dev/null)" || iv=""
+  prs="$(_gh pr list --state all --search "#$issue in:title,body" --limit 30 \
+    --json number,state,mergedAt,baseRefName,url 2>/dev/null)" || prs=""
+  if [ -z "$iv" ] || [ -z "$prs" ]; then
+    echo "build-claim: delivered-check #$issue: unknown reason=github-query-failed (proceeding unverified; absence of links is not proof of no work)"
+    return 0
+  fi
+  payload="$(printf '{"issue":%s,"prs":%s}' "$iv" "$prs")"
+  verdict="$(printf '%s' "$payload" | _delivered_decide "$(_claim_default_branch)")"
+  rc=$?
+  echo "build-claim: delivered-check #$issue: $verdict"
+  case "$verdict" in
+    delivered*|merged-pr-open-issue*)
+      echo "⛔ build-claim: #$issue already has delivered work. Report the evidence above and STOP; do not re-implement. Reopen or file a follow-up only if the merged work is incomplete." >&2 ;;
+    open-pr*)
+      echo "build-claim: #$issue has an open PR. That is not delivery: resume its branch." >&2 ;;
+  esac
+  return $rc
+}
+
 # build_claim_audit — fail-loud backstop across sibling worktrees.
 #
 # Scans each OTHER worktree's commits that are AHEAD of the default branch
@@ -512,6 +590,9 @@ usage: build-claim.sh <verb> [args]
   honor-check <issue> [supervisor]  is this issue claimed by another branch?
                                     exit 0 dispatchable / 3 claimed-by-other /
                                     4 a different wave's live supervisor
+  delivered-check <issue>           is it already delivered (closed / merged PR)?
+                                    exit 0 dispatchable (none, open PR, unknown) /
+                                    5 delivered: stop with the evidence (#2342)
   audit                             alarm on in-flight commits with no claim
   help                              this message
 
@@ -530,6 +611,10 @@ build_claim_main() {
     honor-check|honor_check)
       [ -n "${1:-}" ] || { echo "build-claim: honor-check needs an issue number" >&2; build_claim_usage; return 64; }
       build_honor_check "$@"
+      ;;
+    delivered-check|delivered_check)
+      [ -n "${1:-}" ] || { echo "build-claim: delivered-check needs an issue number" >&2; build_claim_usage; return 64; }
+      build_delivered_check "$@"
       ;;
     audit|claim-audit)
       build_claim_audit

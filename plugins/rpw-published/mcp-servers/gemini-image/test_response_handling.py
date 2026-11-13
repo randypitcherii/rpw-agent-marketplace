@@ -287,6 +287,59 @@ class TestEditImageByteHandling(_MockClientMixin, unittest.TestCase):
         self.assertIn("nano-banana-pro", payload["known_aliases"])
 
 
+class TestVertexUsageAndImageSize(_MockClientMixin, unittest.TestCase):
+    """#2611 on the Vertex backend: usage_metadata surfaces; image_size reaches ImageConfig."""
+
+    def _with_usage(self, response):
+        from google.genai import types
+
+        response.usage_metadata = types.GenerateContentResponseUsageMetadata(
+            prompt_token_count=9,
+            candidates_token_count=1290,
+            total_token_count=1299,
+            candidates_tokens_details=[types.ModalityTokenCount(modality="IMAGE", token_count=1290)],
+        )
+        return response
+
+    def test_usage_line_reports_image_output_tokens(self):
+        response = self._with_usage(_make_fake_response(_VALID_FAKE_PNG))
+        with patch.dict(os.environ, {"GEMINI_IMAGE_BACKEND": "vertex"}), self._mock_client(response):
+            result = self.mcp_server.generate_image(prompt="a cat", filename="u.png", model="nano-banana-2")
+        first, second = result.splitlines()
+        self.assertTrue(first.startswith("Image saved to: "))
+        usage = json.loads(second[len("Usage: "):])
+        self.assertEqual(usage["image_output_tokens"], 1290)
+        self.assertEqual(usage["total_token_count"], 1299)
+        self.assertEqual(usage["backend"], "vertex")
+        self.assertEqual(usage["resolved_model"], "gemini-3.1-flash-image")
+
+    def test_mock_without_real_usage_has_no_usage_line(self):
+        response = _make_fake_response(_VALID_FAKE_PNG)  # MagicMock usage_metadata
+        with patch.dict(os.environ, {"GEMINI_IMAGE_BACKEND": "vertex"}), self._mock_client(response):
+            result = self.mcp_server.generate_image(prompt="a cat", filename="n.png")
+        self.assertEqual(len(result.splitlines()), 1)
+
+    def test_image_size_passed_to_image_config(self):
+        response = _make_fake_response(_VALID_FAKE_PNG)
+        with patch.dict(os.environ, {"GEMINI_IMAGE_BACKEND": "vertex"}), self._mock_client(response) as gc:
+            self.mcp_server.generate_image(prompt="a", filename="s.png", model="nano-banana-pro", image_size="4K")
+        config = gc.return_value.models.generate_content.call_args.kwargs["config"]
+        self.assertEqual(config.image_config.image_size, "4K")
+
+    def test_image_size_omitted_by_default(self):
+        response = _make_fake_response(_VALID_FAKE_PNG)
+        with patch.dict(os.environ, {"GEMINI_IMAGE_BACKEND": "vertex"}), self._mock_client(response) as gc:
+            self.mcp_server.generate_image(prompt="a", filename="d.png")
+        config = gc.return_value.models.generate_content.call_args.kwargs["config"]
+        self.assertIsNone(config.image_config.image_size)
+
+    def test_invalid_image_size_returns_error_without_api_call(self):
+        with patch.dict(os.environ, {"GEMINI_IMAGE_BACKEND": "vertex"}), self._mock_client(None) as gc:
+            result = self.mcp_server.generate_image(prompt="a", image_size="huge")
+        self.assertEqual(json.loads(result)["error"], "invalid_image_size")
+        gc.assert_not_called()
+
+
 class TestModelAliasResolution(unittest.TestCase):
     """Alias → real Vertex model id mapping and passthrough (issue #350)."""
 
@@ -331,11 +384,17 @@ class TestMagicByteDetection(unittest.TestCase):
     def test_path_traversal_sanitized(self):
         """_save_image strips directory components (regression guard)."""
         import mcp_server
-        with patch.object(mcp_server, "OUTPUT_DIR", tempfile.mkdtemp(prefix="gemini_trav_")):
-            path = mcp_server._save_image(_VALID_FAKE_PNG, "../../etc/malicious.png")
-            self.assertTrue(path.startswith(mcp_server.OUTPUT_DIR))
-            self.assertIn("malicious.png", path)
-            self.assertNotIn("etc", path)
+        # The tmpdir name deliberately contains "etc": a substring assert on the
+        # full path would false-fail on it (#2255). Assert containment instead.
+        with tempfile.TemporaryDirectory(prefix="gemini_etc_") as tmpdir:
+            with patch.object(mcp_server, "OUTPUT_DIR", tmpdir):
+                path = mcp_server._save_image(_VALID_FAKE_PNG, "../../etc/malicious.png")
+            resolved = Path(path).resolve()
+            root = Path(tmpdir).resolve()
+            self.assertTrue(resolved.is_relative_to(root), f"{resolved} escaped {root}")
+            # Basename only: no traversal component survives below the output dir.
+            self.assertEqual(resolved.relative_to(root).parts, ("malicious.png",))
+            self.assertTrue(resolved.exists())
 
 
 if __name__ == "__main__":

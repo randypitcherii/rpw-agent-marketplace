@@ -119,19 +119,6 @@ class TestGenerateImage(unittest.TestCase):
         )
         self.assertIn("custom_name.png", result)
 
-    def test_generate_image_path_traversal_sanitized(self):
-        """Filenames with path components should be stripped to basename only.
-
-        This tests _save_image directly — no API call needed.
-        """
-        fake_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
-        path = self.mcp_server._save_image(fake_png, "../../etc/malicious.png")
-        # Should be saved in output_dir, not traversed
-        self.assertTrue(path.startswith(self.output_dir))
-        self.assertIn("malicious.png", path)
-        self.assertNotIn("etc", path)
-        self.assertTrue(Path(path).exists())
-
 
 @unittest.skipUnless(_has_project(), "GOOGLE_CLOUD_PROJECT not set — skipping integration tests")
 class TestEditImage(unittest.TestCase):

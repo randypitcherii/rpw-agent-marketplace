@@ -22,7 +22,7 @@ If any check fails, ask a focused clarifying question before coding.
 
 ## Makefile-First Execution
 
-- Run `make list` to discover available commands.
+- Run `make help` to discover available targets.
 - Prefer `make verify` for repo-wide invariants.
 
 ## Execution Steps

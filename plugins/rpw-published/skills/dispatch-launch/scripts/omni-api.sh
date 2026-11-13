@@ -20,8 +20,30 @@
 #                              profile whose host is the workspace, DEFAULT
 #                              first; else the host's first DNS label)
 #   OMNIGENT_RUNNER_SLICE_KEY  host id for the shard header, injected in sessions
+#   OMNIGENT_TERMINAL_LAUNCH_SESSION_ID / OMNIGENT_RUNNER_PRIMARY_SESSION_ID
+#                              the calling session's own id, injected in sessions;
+#                              `omni_resolve_sid self` reads them (#2542)
 
 die() { printf '%s\n' "$1" >&2; exit "${2:-1}"; }
+
+# --- SID=self ---------------------------------------------------------------
+# `self` is the calling session. Omnigent exports no OMNIGENT_SESSION_ID; the
+# runner injects the session it runs as these two (the pair
+# scripts/wave_worker.py SELF_SESSION_ENV reads). Absent both, fail: a guessed
+# id would rename someone else (#2542).
+OMNI_SELF_SESSION_ENV=(OMNIGENT_TERMINAL_LAUNCH_SESSION_ID OMNIGENT_RUNNER_PRIMARY_SESSION_ID)
+omni_resolve_sid() {  # omni_resolve_sid <sid>  -> the id; `self` -> the caller's
+  local sid="$1" var val
+  if [[ "$sid" != "self" ]]; then printf '%s\n' "$sid"; return; fi
+  for var in "${OMNI_SELF_SESSION_ENV[@]}"; do
+    val="${!var:-}"
+    if [[ -n "$val" ]]; then
+      [[ "$val" =~ ^[A-Za-z0-9_-]+$ ]] || die "SID=self: \$$var='$val' is not a session id" 2
+      printf '%s\n' "$val"; return
+    fi
+  done
+  die "SID=self: no session id in the environment (\$${OMNI_SELF_SESSION_ENV[0]} and \$${OMNI_SELF_SESSION_ENV[1]} are unset) — run inside an omnigent session, or pass SID=<conversation_id> (see: make session-list)" 2
+}
 
 # --- base URL ---------------------------------------------------------------
 # Explicit override first, then the server base every omnigent session gets,

@@ -20,7 +20,6 @@ Supervise a repo's **engineering backlog** in the current session by default. Fr
 | [`worker-brief-template.md`](worker-brief-template.md) | the canonical per-worker brief (#492) |
 | [`wave-issue-template.md`](wave-issue-template.md) | the `wave`-labeled issue (#849); the ownership lease (#886/#823) |
 | [`wave-state-template.md`](wave-state-template.md) | `WAVE-STATE.md`, the wave's state of record (#569) |
-| [`wave-observability.md`](wave-observability.md) | the wave page: bring-up, port resolution, scope (#705/#1136) |
 | [`merge-and-closeout.md`](merge-and-closeout.md) | rationale, teardown, process sweep, wave-PR contract |
 | [`wave-pr-template.md`](wave-pr-template.md) | the one wave PR: body sections, metadata, status legend (#897) |
 | [`retro-miner.md`](retro-miner.md) | close-out mining lenses, issue contract, Slack digest |
@@ -47,7 +46,6 @@ Supervise a repo's **engineering backlog** in the current session by default. Fr
 
 - Cut the branch from `make base-ref` (fork-aware, fetched; #1164) and push it — snippet, and why the base is never hand-written: [`dispatch-mechanics.md`](dispatch-mechanics.md). Workers branch **off the wave branch** and PR **into it**, so those PRs do NOT auto-close issues. Topology and hotfix sync: [`merge-and-closeout.md`](merge-and-closeout.md).
 - **Then initialize `WAVE-STATE.md` and `.wave/`, before the first dispatch** (#569) — fresh from [`wave-state-template.md`](wave-state-template.md), **overwrite** the previous wave's file, never edit it — supervisor worktrees get reused. Record the wave issue number there.
-- **Then open the wave observability page and hand the user its URL (REQUIRED)** (#1136) — bring-up, resolving the URL from the port registry, the page's honest scope, and why a page that will not start is a disclosure rather than a wave blocker: [`wave-observability.md`](wave-observability.md).
 
 ### 3. Dispatch — Omnigent child-session workers (primary pattern)
 
@@ -75,4 +73,4 @@ Merge worker PRs into the wave branch **one same-plugin PR at a time**, each ref
 
 ## Escalation triggers (pause and ask)
 
-**The whole list** — every other setback is the supervisor's to absorb, and a nudge-clearable stall is not an escalation. An **undiagnosed** repeat failure of the same issue — park it, never implement it yourself (#1021) · an unserializable merge · needs-input is the only work left · cap reached · a `WAVE-STATE.md` branch mismatch at close-out · **a `wave-own` refusal (#886)** · anything touching production outside the wave PR. **How** to ask: [`asking-the-user.md`](asking-the-user.md).
+**The whole list** — every other setback is the supervisor's to absorb, and a nudge-clearable stall is not an escalation. An **undiagnosed** repeat failure of the same issue — park it, never implement it yourself (#1021) · an unserializable merge · needs-input is the only work left · cap reached · a `WAVE-STATE.md` branch mismatch at close-out · **a `wave-own` refusal (#886)** · anything touching production outside the wave PR, except a live step off the stop list (`docs/process/live-steps.md`, #2567): that you run, verify and report. **How** to ask: [`asking-the-user.md`](asking-the-user.md).

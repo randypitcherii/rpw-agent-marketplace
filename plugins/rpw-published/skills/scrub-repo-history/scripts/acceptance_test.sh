@@ -116,6 +116,7 @@ C7=$(git -C "$FIXTURE" rev-parse HEAD)
 echo
 echo "== 1. preview =="
 PREVIEW_OUT=$("$PREVIEW" --repo "$FIXTURE" --path "$SECRET_PATH" 2>&1) || true
+# shellcheck disable=SC2001  # a per-line prefix; ${var//} cannot anchor at each line start
 echo "$PREVIEW_OUT" | sed 's/^/    | /'
 
 contains "$PREVIEW_OUT" "affected commits (4)" "preview counts the 4 commits that touched the path"
@@ -152,10 +153,12 @@ git clone -q --mirror "$FIXTURE" "$WORKING"
 backup_commits=$(git -C "$BACKUP" rev-list --all --count)
 if [ "$backup_commits" -ge 7 ]; then ok "backup mirror holds all $backup_commits commits"; else bad "backup mirror is short ($backup_commits commits)"; fi
 
-TAG_BEFORE=$(git -C "$WORKING" rev-parse v1.0^{commit})
-filter_repo "$WORKING" --path "$SECRET_PATH" --invert-paths >/dev/null 2>&1 \
-    && ok "filter-repo rewrite completed" \
-    || bad "filter-repo rewrite failed"
+TAG_BEFORE=$(git -C "$WORKING" rev-parse 'v1.0^{commit}')
+if filter_repo "$WORKING" --path "$SECRET_PATH" --invert-paths >/dev/null 2>&1; then
+    ok "filter-repo rewrite completed"
+else
+    bad "filter-repo rewrite failed"
+fi
 
 echo
 echo "== 3. verification =="
@@ -183,7 +186,7 @@ contains "$BRANCHES_AFTER" "refs/heads/feature" "feature survives the rewrite"
 # Tag decision: tags are rewritten, never left pointing at pre-rewrite history.
 if git -C "$WORKING" rev-parse -q --verify v1.0 >/dev/null; then
     ok "tag v1.0 still exists after the rewrite"
-    TAG_AFTER=$(git -C "$WORKING" rev-parse v1.0^{commit})
+    TAG_AFTER=$(git -C "$WORKING" rev-parse 'v1.0^{commit}')
     if [ "$TAG_AFTER" != "$TAG_BEFORE" ]; then
         ok "tag v1.0 was remapped off its pre-rewrite commit"
     else

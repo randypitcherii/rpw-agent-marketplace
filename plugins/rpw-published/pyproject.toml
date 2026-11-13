@@ -4,8 +4,8 @@
 # a local `uv build` safe too.
 [project]
 name = "rpw-mcp"
-version = "2026.10.0811"
-description = "The rpw MCP aggregator and its backend servers, runnable with uvx"
+version = "2026.11.1302"
+description = "The rpw MCP entry (a front over mcporter) and its backend servers, runnable with uvx"
 requires-python = ">=3.10"
 dependencies = ["fastmcp>=4.0.0"]
 

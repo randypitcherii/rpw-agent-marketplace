@@ -4,7 +4,9 @@
 #   qa.sh <in.html> [in.png] [receipt.json]
 #
 # The receipt defaults to <in.png without .png>.qa.json. Exit 0 means every
-# machine-checkable item passed; exit 1 means the receipt contains findings.
+# machine-checkable item passed; exit 1 means the receipt contains findings;
+# exit 2 is a tooling or input failure; exit 3 means Chrome's sandbox cannot start
+# because this process already runs inside one (a nested sandbox) — not a finding.
 #
 # Env overrides:
 #   CHROME_PATH                    explicit Chrome/Chromium binary
@@ -34,35 +36,18 @@ CHECKER="$SCRIPT_DIR/qa.js"
 IN_ABS="$(cd "$(dirname "$IN")" && pwd)/$(basename "$IN")"
 PNG_ABS="$(cd "$(dirname "$PNG")" && pwd)/$(basename "$PNG")"
 
-find_chrome() {
-  if [[ -n "${CHROME_PATH:-}" ]]; then
-    [[ -x "$CHROME_PATH" ]] && { printf '%s' "$CHROME_PATH"; return 0; }
-    command -v "$CHROME_PATH" 2>/dev/null && return 0
-    return 1
-  fi
-  local candidate
-  for candidate in google-chrome google-chrome-stable chromium chromium-browser chrome; do
-    command -v "$candidate" 2>/dev/null && return 0
-  done
-  for candidate in \
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-    "/Applications/Chromium.app/Contents/MacOS/Chromium" \
-    "/opt/google/chrome/chrome"; do
-    [[ -x "$candidate" ]] && { printf '%s' "$candidate"; return 0; }
-  done
-  return 1
-}
+# Chrome discovery, the sandbox flag setup and the nested-sandbox detector are
+# shared with render.sh (#2288).
+# shellcheck source=chrome-lib.sh
+source "$SCRIPT_DIR/chrome-lib.sh"
 
 CHROME="$(find_chrome)" || {
   echo "qa.sh: no Chrome/Chromium found; use render.sh's installation instructions." >&2
   exit 2
 }
 
-CHROME_FLAGS=(--headless --disable-gpu --hide-scrollbars)
-if [[ "${RPW_DIAGRAM_UNSAFE_NO_SANDBOX:-0}" == "1" ]]; then
-  echo "qa.sh: WARNING — running Chrome with --no-sandbox; renderer containment is disabled." >&2
-  CHROME_FLAGS+=(--no-sandbox)
-fi
+# Sandbox stays on unless RPW_DIAGRAM_UNSAFE_NO_SANDBOX=1 — see chrome-lib.sh.
+chrome_flags_init qa.sh
 
 TMPDIR_QA="$(mktemp -d)"
 QA_HTML="$TMPDIR_QA/input.html"
@@ -71,6 +56,7 @@ CDP_IN="$TMPDIR_QA/cdp.in"
 CDP_OUT="$TMPDIR_QA/cdp.out"
 PROFILE="$TMPDIR_QA/profile"
 CDP_PID=""
+# shellcheck disable=SC2329  # invoked indirectly, by `trap cleanup EXIT` below
 cleanup() {
   # Capture first: with `set -e`, a later kill/wait/rm in this trap would
   # otherwise rewrite `exit 0` (PASS) into 1 after the receipt is already written.
@@ -90,13 +76,15 @@ cleanup() {
   exit "$rc"
 }
 trap cleanup EXIT
+# A Chrome that died early must fail the next DevTools write, not kill this shell.
+trap '' PIPE
 
 PNG_SIGNATURE="$(od -An -tx1 -N8 "$PNG_ABS" | tr -d ' \n')"
 [[ "$PNG_SIGNATURE" == "89504e470d0a1a0a" ]] || {
   echo "qa.sh: artifact is not a PNG: $PNG" >&2
   exit 2
 }
-PNG_BYTES=($(od -An -tu1 -j16 -N8 "$PNG_ABS"))
+read -r -a PNG_BYTES <<<"$(od -An -tu1 -j16 -N8 "$PNG_ABS")"
 if [[ "${#PNG_BYTES[@]}" -ne 8 ]]; then
   echo "qa.sh: could not read PNG dimensions from $PNG" >&2
   exit 2
@@ -156,7 +144,7 @@ cdp_call() {
   local message
   local deadline=$((SECONDS + 20))
   CDP_ID=$((CDP_ID + 1))
-  printf '{"id":%s,%s}\0' "$CDP_ID" "$body" >&5
+  printf '{"id":%s,%s}\0' "$CDP_ID" "$body" >&5 2>/dev/null || return 1
   while [[ "$SECONDS" -lt "$deadline" ]]; do
     if IFS= read -r -d '' -t 1 message <&6; then
       record_cdp_event "$message"
@@ -164,6 +152,8 @@ cdp_call() {
         CDP_REPLY="$message"
         return 0
       fi
+    else
+      kill -0 "$CDP_PID" 2>/dev/null || return 1
     fi
   done
   return 1
@@ -175,6 +165,8 @@ wait_for_page_load() {
   while [[ "$PAGE_LOADED" -eq 0 && "$SECONDS" -lt "$deadline" ]]; do
     if IFS= read -r -d '' -t 1 message <&6; then
       record_cdp_event "$message"
+    else
+      kill -0 "$CDP_PID" 2>/dev/null || return 1
     fi
   done
   [[ "$PAGE_LOADED" -eq 1 ]]
@@ -185,7 +177,8 @@ tool_error() {
   if [[ "${RPW_DIAGRAM_QA_DEBUG:-0}" == "1" && -n "$CDP_REPLY" ]]; then
     echo "qa.sh: last DevTools response: $CDP_REPLY" >&2
   fi
-  if grep -qi sandbox "$QA_ERR"; then
+  exit_if_nested_sandbox "$QA_ERR" qa.sh "not a QA finding"
+  if [[ "$(classify_chrome_err "$QA_ERR")" == sandbox ]]; then
     echo "qa.sh: Chrome mentions its sandbox. In root-in-a-container only, set" >&2
     echo "  RPW_DIAGRAM_UNSAFE_NO_SANDBOX=1 (UNSAFE; disables renderer containment)." >&2
   fi

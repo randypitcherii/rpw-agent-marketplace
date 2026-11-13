@@ -1,6 +1,6 @@
 # Google Docs MCP Server
 
-MCP server for Google Docs CRUD, tabs (including nested subtabs), find/replace, tab-targeted write, advanced operations, Google Slides read/metadata + template fill (copy-template, batch placeholder replace, table-cell fill, image insert), and Google Sheets values read/write/append/clear + `batchUpdate` formatting. Uses gcloud ADC auth and enforces read-only mode, folder allow-list, and audit logging.
+MCP server for Google Docs CRUD, tabs (including nested subtabs), find/replace, tab-targeted write, advanced operations, Google Slides read/metadata + template fill (copy-template, batch placeholder replace, table-cell fill, image insert), and Google Sheets values read/write/append/clear + `batchUpdate` formatting, with layout read-back and PDF export to verify formatting. Uses gcloud ADC auth and enforces read-only mode, folder allow-list, and audit logging.
 
 ## Setup
 
@@ -79,6 +79,8 @@ Or register using `google_docs.mcp.json` — merge the `mcpServers` block. For m
 | `gsheets_append_rows` | Append rows after a table's last row (`values.append`, gated write). See [Sheets tools](#sheets-tools) |
 | `gsheets_clear` | Clear the values in a range, keeping formatting (`values.clear`, gated write). See [Sheets tools](#sheets-tools) |
 | `gsheets_format` | Apply raw `spreadsheets.batchUpdate` requests — formatting/structure (gated write). See [Sheets tools](#sheets-tools) |
+| `gsheets_get_layout` | Read column widths, row heights, sheet properties, optional effective cell format (`spreadsheets.get`). See [Sheets tools](#sheets-tools) |
+| `gsheets_export_pdf` | Export a spreadsheet as PDF to a local temp file (Drive `files.export`). See [Sheets tools](#sheets-tools) |
 | `gdocs_share` | Share doc with email |
 | `gdocs_search` | Search text within doc |
 | `gdocs_insert_person` | Insert person chip (@mention) |
@@ -213,7 +215,7 @@ image's `objectId`), or `{"error": ...}`.
 
 ### Sheets tools
 
-These five tools operate on Google **Sheets** spreadsheets (#197). They ride the
+These seven tools operate on Google **Sheets** spreadsheets (#197, #1125). They ride the
 same authenticated client and `policy` gating as the Docs/Slides tools — Sheets
 API v4 needs no new dependency and no separate credential store. Every
 `spreadsheet_id` argument accepts a raw ID or a full Sheets URL
@@ -228,7 +230,8 @@ bare ID. All ranges use **A1 notation**:
 | `'Q3 Data'!A1:B` | sheet name with a space (single-quote it) |
 | `Sheet1` | the sheet's whole used range |
 
-`gsheets_read_values` is ungated (like `gdocs_read`). The four write tools are
+`gsheets_read_values`, `gsheets_get_layout` and `gsheets_export_pdf` are ungated
+(like `gdocs_read`). The four write tools are
 **gated writes**: blocked in read-only mode (`GDOCS_READ_ONLY=true`), subject to
 the folder allow-list, and audited on success. `values` is a list of rows, each
 a list of cells — `[["Name", "Score"], ["Ann", 91]]`.
@@ -280,6 +283,25 @@ half-open `GridRange`. Example — bold the header row:
 
 The tool's decorated docstring carries more shapes (background color, freeze
 row, auto-resize columns).
+
+#### `gsheets_get_layout`
+
+The read-back half of `gsheets_format` (#1125). Wraps `spreadsheets.get` with
+`fields=sheets(properties,data(rowMetadata,columnMetadata))`, so each sheet
+returns its properties plus per-row and per-column `pixelSize`. The optional
+`range` (comma-separated A1) narrows the result to the sheets, rows and columns
+it covers. `include_cell_format=true` adds `data.rowData.values.effectiveFormat`
+(wrap strategy, alignment, text format) and **requires** a `range`, so per-cell
+data stays bounded on large sheets. Errors pass through as `{"error": {...}}`.
+
+#### `gsheets_export_pdf`
+
+The visual half (#1125). Calls Drive `files/{id}/export?mimeType=application/pdf`
+and writes the PDF to a fresh local temp file. Returns
+`{"ok": true, "path", "bytes", "mime_type"}`; read `path` to see the render.
+The loop is `gsheets_format` → `gsheets_export_pdf` → read the PDF → iterate.
+It needs only the Drive scope the server already holds. Drive caps exports at
+10 MB, and a Drive error envelope passes through as-is.
 
 ## House style lint
 
@@ -340,7 +362,7 @@ The server is split into focused modules (restructured from the former
 | `app.py` | The shared `FastMCP` instance both tool modules register on |
 | `mcp_server.py` | Core CRUD + tab-lifecycle `@mcp.tool` surface; process entrypoint (`main`) |
 | `tools_media.py` | Media/collab tools: slides (create/read/metadata/replace-text), share, search, person chip, image upload/insert |
-| `tools_sheets.py` | Google Sheets `@mcp.tool` surface: `gsheets_read_values`/`write_values`/`append_rows`/`clear`/`format` (values.* + batchUpdate) |
+| `tools_sheets.py` | Google Sheets `@mcp.tool` surface: `gsheets_read_values`/`write_values`/`append_rows`/`clear`/`format` (values.* + batchUpdate), `get_layout` (spreadsheets.get) and `export_pdf` (Drive export) |
 | `tools_slides.py` | Slides template-fill `@mcp.tool` surface: `gdocs_slides_copy_template` (Drive copy) + `gdocs_slides_replace_all_text`/`fill_table`/`insert_image` (batchUpdate) |
 | `sheets_ops.py` | `normalize_spreadsheet_id` (ID/URL) + `encode_range` (A1 path encoding) helpers used by the `gsheets_*` tools |
 | `policy.py` | Read-only mode, folder allow-list, audit log, Docs-API error mapping |
@@ -443,7 +465,9 @@ mocked; all run in the gate (`make verify-mcp-gstyle`).
 The Sheets tools are covered by `test_google_sheets_mcp.py` — the `sheets_ops`
 ID/URL normalizer + A1 range encoder, and every `gsheets_*` tool: request
 shaping (method/URL/query/body) via the single `policy.api` patch point, plus
-read-only and allow-list gating on the writes. Fully mocked; runs in the gate.
+read-only and allow-list gating on the writes, the exact `gsheets_get_layout`
+field mask, and `gsheets_export_pdf` writing a faked Drive export to a temp file.
+Fully mocked; runs in the gate.
 
 ### Live integration tier (manual, never in the gate)
 

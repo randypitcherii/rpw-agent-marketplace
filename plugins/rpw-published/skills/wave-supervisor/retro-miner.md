@@ -69,11 +69,18 @@ For each finding, file ONE GitHub issue:
 
 ## The `skill:` line — attribute the friction (#1960)
 
+**This section is the one home of the convention** (#1988). Every other surface that
+writes or reads the line — `periodic-review`, the chief-of-staff friction harvest, the
+staleness sweep's usage snapshot — points here. Its spec is the parser:
+`scripts/usage_report.py` (`SKILL_TAG`, `skill_names_on_line`, `friction_by_skill`).
+Where this text and that code disagree, the code is right and this text is the bug —
+change `SKILL_TAG` and this is the one document to update.
+
 A skill's load count measures how often it **triggers**, not whether it **helped**.
 `communication` is required by the global CLAUDE.md and `issue-first-development` is a
 gate, so both score high by obedience; `scrub-repo-history` is rare and high-stakes and
 scores low. Friction is the cheapest correction to that: a skill that keeps producing
-retro findings is a skill worth reading, whatever its session count says.
+findings is a skill worth reading, whatever its session count says.
 
 So when a finding implicates a specific house skill, name it on **its own body line**:
 
@@ -84,28 +91,50 @@ skill: dispatch-launch
 
 Rules, all of which the reader depends on:
 
-- **A body line, never a label.** The label set is already 81 entries; one label per
-  skill would double it. `retro-finding` stays the only label this adds.
-- **The skill's directory name**, lowercase, exactly as it appears under
-  `plugins/*/skills/` — not the title, not a slash command. A name that matches no skill
-  is dropped by the reader and reported as an ignored line, so a typo is visible.
+- **A body line on a `retro-finding` issue, never a label.** The label set is already 81
+  entries; one label per skill would double it. The reader lists only
+  `retro-finding`-labelled issues, so the label is required and is the only one this
+  adds — it rides alongside whatever `type:`/priority labels the filing procedure
+  assigns, never instead of them.
+- **The skill's directory name**, exactly as it appears under
+  `plugins/rpw-published/skills/` or `plugins/rpw-private/skills/` — not the title, not
+  a slash command, not a plugin-qualified name. Write it lowercase (the reader
+  case-folds both `skill:` and the name, and strips surrounding backticks, quotes,
+  brackets and a trailing period). Two failure modes, and only one is visible: a
+  well-formed name that matches no skill is dropped and **named** in the report's
+  "ignored" note, so a typo shows; anything that is not a bare skill-shaped name
+  (`/build`, `rpw-published:wave-supervisor`, `n/a`, a name with spaces) is dropped
+  **silently**.
 - **One line per skill.** Comma-separated names on one line are accepted; separate lines
-  read better in the issue.
+  read better in the issue. A leading list marker or `>` quote is tolerated. A skill
+  named more than once in one issue counts once.
 - **Omit it when the finding is not about a skill.** A missing dispatch permission, a
-  flaky runner, or a Makefile gap has no skill to blame, and a guessed attribution is
-  worse than none — it puts friction on a skill that did nothing wrong.
+  flaky runner, a Makefile or CI gap, product or library code, a brief or an AGENTS.md
+  (not skills, even when an agent followed them) have no skill to blame. If you cannot
+  name the file whose guidance produced the finding, there is no attribution to make. A
+  guessed attribution is worse than none — it puts friction on a skill that did nothing
+  wrong. Attribute it when a skill's *guidance* was wrong, missing, misleading, stale,
+  or ignored because it was unreadable.
 
 The weekly usage snapshot reads these into the rollup's outcome table
-(`scripts/usage_report.py`, `friction_by_skill`); `make usage-report` prints the tagged
-count. Counting is **forward-only** — the 179 findings filed before this convention were
-deliberately not backfilled, so an empty column in the first weeks is expected.
+(`friction_by_skill`: one `gh issue list` call for up to the 800 most recent
+`retro-finding` issues, open vs closed counted per skill); `make usage-report` prints the
+tagged count on its `friction:` line. Counting is **forward-only** — the 179 findings
+filed before this convention were deliberately not backfilled, so an empty column in the
+first weeks is expected.
 
-To read the count for one skill by hand:
+To read the count for one skill by hand (an approximation of the reader — it matches by
+word boundary and does not validate the name against the skill catalog):
 
 ```bash
 gh issue list --label retro-finding --state all --limit 800 --json number,state,body \
-  --jq '[.[] | select(.body | test("(?im)^\\s*skill:.*\\bwave-supervisor\\b"))] | length'
+  --jq '[.[] | select(.body | test("(?im)^[ \\t>*+-]*skill:.*\\bwave-supervisor\\b"))] | length'
 ```
+
+It is **not a score and not a threshold.** High friction plus high usage is a skill worth
+reading; high usage alone is not a result; zero friction on a rarely-loaded skill means
+nothing was reported, not that nothing is wrong. Nothing reads these counts and edits a
+skill — every edit lands through an issue a human approves.
 
 Do NOT file: findings about a single worker's one-off mistake with no process fix, or anything already fixed mid-wave (fold-in rule). Report the filed issue numbers in the wave close-out summary.
 

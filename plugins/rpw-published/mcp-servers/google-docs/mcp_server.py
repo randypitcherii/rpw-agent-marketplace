@@ -9,7 +9,8 @@ Layout (post-#318 restructure):
   - ``app``           — the shared FastMCP instance
   - this module       — core CRUD + tab-lifecycle tools, plus the entrypoint
   - ``tools_media``   — slides read/create/replace + share/search/person + image
-  - ``tools_sheets``  — Google Sheets (API v4) values read/write/append/clear/format
+  - ``tools_sheets``  — Google Sheets (API v4) values read/write/append/clear/format,
+                         layout read-back + PDF export
   - ``tools_slides``  — Slides template-fill: copy-template + batch replace/table/image
   - ``policy``        — read-only/allow-list/audit gating + API error mapping
   - ``docs_read`` / ``docs_write`` / ``markdown_render`` / ``markdown_inline`` /
@@ -421,7 +422,9 @@ from tools_media import (  # noqa: E402
 from tools_sheets import (  # noqa: E402
     gsheets_append_rows,
     gsheets_clear,
+    gsheets_export_pdf,
     gsheets_format,
+    gsheets_get_layout,
     gsheets_read_values,
     gsheets_write_values,
 )

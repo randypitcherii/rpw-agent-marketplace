@@ -1,11 +1,12 @@
-"""`rpw-mcp`: run the `rpw` MCP aggregator from a uvx install (#2242, #894 slice B).
+"""`rpw-mcp`: run the one `rpw` MCP entry from a uvx install (#2242, #2623).
 
 The wheel carries this plugin's `mcp-servers/` tree under `plugin/`, so
 
     uvx --from "git+<repo>#subdirectory=plugins/rpw-published" rpw-mcp
 
-serves the same backends an installed Claude Code plugin does, on a host with only
-`uv`.
+serves the same front an installed Claude Code plugin does (``mcp-servers/rpw/front.py``
+over the mcporter keep-alive runtime), on a host with `uv` and Node 24+. An installed
+``rpw-private`` plugin, when present, is served alongside it.
 
 **The tree is copied out of the install before it runs.** uvx installs into uv's own
 cache, and uv refuses to sync a project inside its cache, so each backend's
@@ -57,8 +58,7 @@ def main() -> None:
     if not (PACKAGED / "mcp-servers" / "rpw" / "servers.json").is_file():
         sys.exit(f"rpw-mcp: packaged MCP tree missing at {PACKAGED}")
     root = materialize()
-    servers = root / "mcp-servers"
-    sys.path.insert(0, str(servers))
-    from lib import aggregator
+    sys.path.insert(0, str(root / "mcp-servers" / "rpw"))
+    import front
 
-    aggregator.run("rpw", servers / "rpw")
+    front.run(root)

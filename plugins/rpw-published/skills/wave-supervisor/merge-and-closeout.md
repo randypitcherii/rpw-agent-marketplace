@@ -86,6 +86,22 @@ sets `deleteBranchOnMerge` and the branch is pruned at teardown.
 
 Cross-plugin PRs can't collide and may merge on arrival.
 
+**`make wave-merge PR=<n> [ISSUE=<n>|KEY=<key>] REPORT_FILE=<report.md>` is the
+serialized merge as one verb (#2210)** — run it per PR, in the foreground. It
+guards the lease, checks the base against `WAVE-STATE.md`'s wave branch and the
+head is a `worker/*` branch, refreshes a head missing the wave tip with `gh pr
+update-branch` and **waits** for the new head (`NO_REFRESH=1` skips that for a
+cross-plugin PR merging on arrival), waits on the check runs of the **exact head
+SHA** with each `|`-alternative of `CHECKS=` (default `Member checks|Repo gate`)
+matching a green run, squashes with `--match-head-commit`, then lands the report
+*before* recording `merged` (#2422) and appends the merge-log line. Both commits
+in the "contains the tip" test are named by SHA, never via `FETCH_HEAD`. Exit 0
+merged · 1 red · 2 refused (nothing mutated) · 3 lease · 4 pending at timeout · 5
+unprovable (`gh`/`git` did not answer — never read as green) · 6 merged but not
+recorded (run the printed command). A keyless `wave-worktree` worker lands and
+records by `KEY=` on `wave-land`/`wave-record-status`/`wave-record-session`
+(#2510).
+
 **Review before merging — not a rubber stamp.** On skill-authoring PRs the
 `description:` frontmatter is the model-routing mechanism (#268): a changed
 trigger phrase changes when the skill fires, so read it as behavior.
@@ -107,6 +123,44 @@ PR that was edited after triage (#1023).
 stop (#823). A merge is the most expensive mutation a de-throned supervisor can
 make: on 2026-08-05 the losing supervisor merged a PR the real owner had declared
 dead. Serialization only holds if there is one serializer.
+
+### Wait on the run for the head SHA, never on `statusCheckRollup` (#2061)
+
+**A rollup with nothing in progress is not a green.** Pushing a commit cancels
+the old run *before* the new one registers, and in that gap the rollup holds no
+in-progress checks — "nothing running" reads as "done". Measured on PR #2042
+(wave `2026-09-28-skill-learner`): a rollup loop exited `mergeState=CLEAN`
+**20 s** after fold-in `8c06b091` was pushed, while `gh run list` still showed
+the new run `queued` and the old one (`59f4b61f`) `cancelled`. The real run went
+green 5 min later; merging on the false green would have landed an unverified
+commit.
+
+So key the wait on the PR's `headRefOid`. `gh run list --commit <SHA>` filters
+runs by commit (gh 2.102.0, `gh run list --help`: `-c, --commit SHA  Filter runs
+by the SHA of the commit`), which also drops the cancelled run of the previous
+head:
+
+```bash
+SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
+# 1. until at least one run exists for this SHA, 2. until every one is completed
+until runs=$(gh run list --commit "$SHA" --limit 50 --json name,status,conclusion) \
+  && [ "$(jq length <<<"$runs")" -gt 0 ] \
+  && jq -e 'all(.status == "completed")' <<<"$runs" >/dev/null; do
+  sleep 30
+done
+# 3. read each conclusion — every workflow for the SHA must pass
+jq -r '.[] | "\(.name): \(.conclusion)"' <<<"$runs"
+jq -e 'all(.conclusion == "success" or .conclusion == "skipped")' <<<"$runs"
+```
+
+**One SHA can have several workflows, and they register seconds apart.** The
+loop waits on *all* runs it sees, but a second workflow can appear after the
+first completes; if the PR's branch triggers more than one workflow (the
+`pr-to-production__*` set does), check the run count matches before trusting the
+verdict. A parked `action_required` run is `completed` with a non-success
+conclusion, so step 3 fails it rather than passing it (#509 below). Re-read
+`headRefOid` right before merging: a push after the loop exits makes its verdict
+stale.
 
 ### A green root gate proves ONE platform — confirm Linux before merging (#1750)
 
@@ -135,7 +189,17 @@ make wave-platform-check BRANCH=<wave-branch> HEAD_SHA=$(git rev-parse HEAD)
 | `red` | 1 | **The branch's failure, not the next PR's.** Diff the branch before attributing it. |
 | `pending` | 2 | Linux has not finished. Wait; a local gate cannot substitute. |
 | `stale` | 2 | Newest Linux run is on an earlier commit — this one has no coverage. |
-| `absent` | 2 | No run at all. Parked `action_required` runs look identical to no CI (#509 above). |
+| `green-by-tree <run> <commit>` | 0 | No run on the head, but a completed Linux run passed on a commit with the **same tree** (#2062). |
+| `red-by-tree` | 1 | That same-tree run failed — the same bytes, so the same failure. |
+| `absent` | 2 | No run on the branch and no same-tree run. Parked `action_required` runs look identical to no CI (#509 above). |
+| `unknown` | 2 | A `gh`/git read did not answer. Unprovable, never `absent` ([`unasked-is-not-no.md`](../automation-standards/unasked-is-not-no.md)). |
+
+**Tree identity** (#2062): a wave branch that was never a PR head has no run of
+its own, yet after an up-to-date squash-merge its tip shares a tree with the
+merged PR's head, which ran the full `ubuntu-latest` matrix. With no run on
+`HEAD_SHA`, the check compares `HEAD^{tree}` against the commits of the branch's
+last 20 runs and the heads of the last 20 PRs based on it (`gh pr list --base`),
+then reads runs only for tree-equal commits. A different tree never counts.
 
 `red` is 1 and everything unproven is 2 on purpose: "Linux says no" and "Linux
 has not said" are different decisions, and collapsing them hides the second.
@@ -163,25 +227,54 @@ make wave-state-append SECTION='Events' LINE_FILE=/tmp/closeout-line.md
 ## Teardown as issues complete
 
 Issues are NOT closed per-worker — close-out happens via the final wave PR. As
-each worker finishes: close its session (`DELETE /v1/sessions/{id}` or
-`sys_session_close`), remove its worktree, and prune its branch — three separate
-lifetimes now, per `dispatch-launch`'s `session-lifecycle.md`. A failed `git push --delete` on a remote branch usually
-means the repo auto-deleted it on merge — not an error.
+each worker finishes and its PR has merged: close its session, then prune its
+worktree and branch. Order matters, because archiving can delete the bound worktree
+(`git worktree remove --force`, branch kept, #2571): anything uncommitted in it, and
+the gitignored `WORKER-BRIEF.md`, goes with the close. Teardown order and the guard:
+`dispatch-launch`'s `session-lifecycle.md`. A failed `git push --delete` on a remote
+branch usually means the repo auto-deleted it on merge — not an error.
+
+**The supervisor's own session closes last, after retro mining** (close-out step 4)
+— its worktree holds `WAVE-STATE.md` and `.wave/`, both gitignored and both
+retro-miner input. Closing it first deletes the wave's record.
+
+**Close and reap in one step** (#2427): `sys_session_close` can leave a
+native-harness child's `tmux` + harness running at `ppid 1` (5 of 9 closes at
+wave #2406, claude **and** codex). `make wave-close-children` closes each session
+through `session-close.sh`, then reaps whatever still carries its
+`@omnigent-conversation-link` tag — keyed on the conversation, never on cwd:
+
+```bash
+make wave-close-children SESSIONS='<id> <id>…'                          # dry run: guard + tagged processes
+make wave-close-children SESSIONS='<id> <id>…' WAVE_CLOSE_ARGS=--kill   # close, then reap
+```
+
+It **refuses** a session whose bound workspace has uncommitted or unpushed work, or
+a gitignored wave record (`WAVE-BRIEF.md`, `WAVE-STATE.md`, `WORKER-BRIEF.md`,
+`.wave/`) (exit 4, `outcome=refused`) — archiving a bound session has deleted its
+worktree before. Push or discard that work; `--force` overrides, and passes
+`--force` through to `session-close.sh`, which runs the same guard. The reap is the sweep's
+membership-gated kill, so the outcomes read the same (`clean` / `unprovable` /
+`unkillable`). Still run the worktree sweeps below — this covers what carries the
+tag, not a process that escaped it.
 
 ## Process sweep — REQUIRED before and after teardown (#644)
 
-**Deleting a worktree does not kill what is running in it.** A worker verifying a
-flake fix left 48 orphaned busy loops reparented to PID 1; wave cleanup removed
-their worktree while they kept spinning for 11h40m at machine load ~300, which
-throttled a launchd-managed service into serving stale tokens for half a day. The
-worktree was gone, so nothing pointed at the wave — the leak was invisible until
-a human went looking.
+**Deleting a worktree does not kill what is running in it** — the #644 incident,
+told once in [`load-harness-safety.md`](../subagent-dispatch/load-harness-safety.md).
 
 Sweep once per wave worktree, **before** removing it and again after the last
-teardown:
+teardown — and that list **includes the supervisor's own worktree** (#2295).
+An Omnigent child created with no `workspace` inherits the parent's cwd, and
+closing it (`sys_session_close`) tombstones the session but leaves its
+claude-native `tmux` + harness running. Wave #2276 closed 10 children; the
+worker-worktree sweeps reported clean, and only the supervisor-worktree sweep
+found 9 survivors at `ppid 1` (one `tmux … new-session … claude-home-unattended`
+per claude-native child, each tagged `@omnigent-conversation-link`). Run it
+after closing the child sessions:
 
 ```bash
-for wt in <worker-worktree-paths…>; do
+for wt in <supervisor-worktree-path> <worker-worktree-paths…>; do
   make wave-sweep WORKTREE="$wt"   # 0 clean / 1 survivors / 2 UNPROVABLE (#1785)
 done
 uptime   # load average should be back near idle for this machine
@@ -365,6 +458,11 @@ the bot push from the PR branch is the fix.
    false-negative, and the undiscoverable `wave`-label toggle that was the only
    way to clear it, are fixed — the gate now reads the assignee from the API and
    re-fires on `assigned`.)
+
+   **Then run the wave's live steps from the merged code** (#2567): every deploy,
+   `apply` and live smoke a worker handed back. Run each, verify it, put the
+   result in the close-out report. Only a stop-list step goes to 5c as a question:
+   `docs/process/live-steps.md`.
 5b. **After the squash lands, repoint the diagram URL (#1759).** The SHA in the
    body is a wave-branch commit and the wave branch is gone, so the wave record's
    one image is hanging off GitHub's PR-ref retention. Rewrite it to the squash
@@ -393,8 +491,8 @@ the bot push from the PR branch is the fix.
    The prose report still ships — it explains, the questions decide. **Not a
    question:** whether to merge the wave PR (step 5a is yours).
 
-6. Run the process sweep above over every wave worktree; fail loudly on any
-   survivor (#644). Re-run `make wave-platform-check` on the merge commit if any
+6. Run the process sweep above over every wave worktree, **the supervisor's
+   own included** (#2295); fail loudly on any survivor (#644). Re-run `make wave-platform-check` on the merge commit if any
    fold-in landed after step 3.
 7. **Re-run that sweep as a post-merge backstop, before the wave issue is
    closed** (#1846) — it catches a late fold-in, and a step 5 run that was

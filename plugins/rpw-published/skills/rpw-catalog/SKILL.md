@@ -26,23 +26,23 @@ a full checkout it also shows skills this index does not — that is expected, n
 
 <!-- generated:index:begin -->
 
-**Databricks platform, DABs & data** — `dabs-environments`, `databricks-apps`, `databricks-jobs`, `databricks-model-serving`, `databricks-uc-connections`, `databricks-workspace-estate`, `dbt-project-standards`, `eval-patterns`
+**Databricks platform, DABs & data** — `dabs-environments`, `databricks-apps`, `databricks-jobs`, `databricks-model-serving`, `databricks-uc-connections`, `databricks-workspace-estate`, `dbt-project-standards`, `eval-patterns`, `jev-decide`, `rbac-role-design`
 
-**Harness, proxy & auth setup** — `configure-cursor-build`, `hide-claude-managed-settings`, `mobile-sso`, `reauth-before-error`
+**Harness, proxy & auth setup** — `hide-claude-managed-settings`, `mobile-sso`, `reauth-before-error`
 
 **Omnigent operations** — `agentic-improvements-report`, `morning-prep-report`, `omnigent-chief-of-staff`
 
 **MCP servers & standards** — `mcp-setup`, `mcp-standards`
 
-**Writing, doc style & Slack formatting** — `doc-styling`, `document-files`, `simple-english`, `slack-formatting`
+**Writing, doc style & Slack** — `doc-styling`, `document-files`, `simple-english`, `slack-browser`, `slack-formatting`
 
 **Web UI, visuals & browser testing** — `agent-browser-standards`, `browser-testing-standards`, `demo-capture`, `favicon-standards`, `image-generation`, `raycast-extension-development`, `ui-improvement-cycle`, `web-design`
 
 **Personal workflow & research** — `human-todo`, `notion-calendar-dupe-guard`, `pain-interview`, `shareables-experiment`
 
-**Repo, release & backlog ops** — `agents-md-standards`, `archive-migrated-repo`, `changelog-release-notes`, `checkpoint`, `env-preferences`, `generate-backlog`, `marketplace-feedback`, `multi-project-monorepo`, `oss-contribution-closeout`, `project-readme`, `scrub-repo-history`, `skill-recommender`, `staleness-sweep`, `versioning-standards`
+**Repo, release & backlog ops** — `agents-md-standards`, `archive-migrated-repo`, `changelog-release-notes`, `checkpoint`, `codebase-reflection`, `cursor-bridge-hygiene`, `env-preferences`, `generate-backlog`, `makefile-standards`, `marketplace-feedback`, `multi-project-monorepo`, `oss-contribution-closeout`, `project-readme`, `scrub-repo-history`, `skill-recommender`, `staleness-sweep`, `upstream-contribution`, `versioning-standards`
 
-_47 skills. One-line gists: `references/long-tail.md`._
+_53 skills. One-line gists: `references/long-tail.md`._
 <!-- generated:index:end -->
 
 ## How this list stays honest

@@ -20,6 +20,7 @@ root="${RPW_LEARNED_SKILLS_HOME:-}"
 root="${root#"${root%%[![:space:]]*}"}"
 root="${root%"${root##*[![:space:]]}"}"
 [ -n "$root" ] || root="$HOME/.rpw/learned-skills"
+# shellcheck disable=SC2088  # matching a literal leading ~ is the point: this expands it by hand
 case "$root" in "~") root="$HOME" ;; "~/"*) root="$HOME/${root#"~/"}" ;; esac
 
 index="$root/INDEX.md"

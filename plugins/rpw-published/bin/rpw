@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# rpw-plugin-shim (#2763): the public plugin's `rpw`. Claude Code puts this bin/ on PATH.
+# It defers to the full, internal `rpw` CLI when one is on PATH, and otherwise serves
+# `rpw mcp` from this plugin's own launcher, so `rpw mcp ...` works on every install.
+set -euo pipefail
+
+SELF_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+MARKER="rpw-plugin-shim"
+
+# Any other `rpw` on PATH that is not a copy of this shim is the full CLI: hand it everything.
+IFS=: read -r -a path_dirs <<< "${PATH:-}"
+for dir in "${path_dirs[@]}"; do
+  [ -n "$dir" ] || continue
+  candidate="$dir/rpw"
+  [ -x "$candidate" ] && [ -f "$candidate" ] || continue
+  [ "$(cd -- "$dir" 2>/dev/null && pwd)" = "$SELF_DIR" ] && continue
+  grep -q "$MARKER" "$candidate" 2>/dev/null && continue
+  exec "$candidate" "$@"
+done
+
+case "${1:-}" in
+  mcp)
+    shift
+    exec "$SELF_DIR/../skills/mcp-cli/rpw-mcp-cli" "$@"
+    ;;
+  "" | -h | --help | help)
+    cat <<'EOF'
+usage: rpw mcp {servers,tools,call} ...
+
+This is the rpw-published plugin's rpw. It carries `rpw mcp` only; the full CLI
+(skills, doctor, sessions, ask, browser) is the internal rpw-runtime install.
+EOF
+    ;;
+  *)
+    echo "rpw: '$1' needs the full rpw CLI, which is not on PATH. This plugin install carries 'rpw mcp' only." >&2
+    exit 2
+    ;;
+esac

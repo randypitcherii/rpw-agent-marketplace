@@ -15,7 +15,7 @@ Required standards for MCP servers shipped by `rpw-published`. Apply when adding
 4. **Follow the APP_ENV / `template.env` convention** — commit a placeholder `template.env`; the launcher selects `<APP_ENV>.env` (`dev`/`test`/`prod`, default `dev`) at startup, checking the server dir first, then the stable user path `~/.claude/mcp-servers/<server-dir-name>/<APP_ENV>.env`. Mechanics live in the `env-preferences` skill — defer to it rather than restating.
 5. **Never commit real env files** — `.gitignore` must exclude `dev.env`/`test.env`/`prod.env` (and the legacy `.env`). Only `template.env`, with placeholders and no real secrets, is committed.
 6. **Use server sample file naming** — `<server>.mcp.json` (e.g. `google_tasks.mcp.json`, `google_docs.mcp.json`).
-7. **Register servers in `mcp-servers/rpw/servers.json`** — the plugin-root `.mcp.json` holds only the `rpw` aggregator.
+7. **Register servers in `mcp-servers/rpw/servers.json`** — only `rpw-published/.mcp.json` has an entry, `rpw` (#2623).
 8. **Use `${CLAUDE_PLUGIN_ROOT}` for paths** — MCP config args must use `${CLAUDE_PLUGIN_ROOT}` placeholders (not machine-specific absolute paths) for Claude portability.
 
 ## Per-Server Required Files
