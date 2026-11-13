@@ -19,7 +19,13 @@ auto-bump, never a hand-bumped `plugin.json`.
 supervisor's child; record its `conversation_id`, title and worktree in
 `.wave/worker-<issue>.meta.json`. Use `sys_session_send` to resume and
 `sys_session_get_info` plus history to check liveness. Bind the child to its
-exclusive worktree and verify workspace/branch before sending the brief. Children
+exclusive worktree and verify workspace/branch before sending the brief.
+**Binding exists on the REST path only** (#2330): `POST /v1/sessions` with
+`workspace` + `git: {branch_name, existing_worktree: true}` binds the child
+(`wave-spawn --launch`, below). `sys_session_create` still takes no workspace,
+so its children's cwd resets to *your* worktree — send `wave-spawn`'s printed
+wake prompt (absolute `cd` on every call + a branch check), and `git status`
+your own worktree at each checkpoint as the stray-edit detector. Children
 may die with the parent runner (#1085): commit early and reconcile before
 resuming. Detached `claude -p` is the explicit durability fallback.
 
@@ -215,10 +221,30 @@ make wave-spawn ISSUE=556 SLUG=triage-lane WAVE=wave/2026-08-01-backlog \
                                         # branch → claim(s) from INSIDE the
                                         # worktree → stamp WAVE-BRIEF.md →
                                         # append .wave/worker-556.meta.json
-make wave-land ISSUE=556 PR=<url> REPORT_FILE=/tmp/report.md   # append report +
-                                        # usage line to .wave/worker-556.log,
-                                        # backfill meta `pr`, print teardown
+# sys_session_create(title=<the `title:` spawn printed>, ...) → conversation_id
+make wave-record-session ISSUE=556 SESSION=<conversation_id>   # meta `session` +
+                                        # dispatch=omnigent-child, re-render (#2292)
+make wave-land ISSUE=556 PR=<url> REPORT_FILE=/tmp/report.md \
+  WAVE_LAND_ARGS="--tokens-in 812k --tokens-out 41k --tool-uses 93" \
+  DURATION='38m'                        # append report + ONE usage line to
+                                        # .wave/worker-556.log, backfill meta
+                                        # `pr`, print teardown
 ```
+
+**A `sys_session_create` error is not proof the child is missing** (#2332).
+The call can return `{"error": "sys_session_create failed: "}` with an empty
+message *and* have created the child; a retry under the same title then gets a
+409 `sub-agent name already exists`. Before any retry, run `sys_session_list`
+and look for the exact `title:` spawn printed. Found → use that
+`conversation_id` and record it. A 409 means the same thing: it exists, use that
+one. Never retry under a new title — two children for one worktree breaks
+[one worktree, one worker](#one-worktree-one-worker-827).
+
+**Pass the worker's usage figures** (#2070) — `WAVE_LAND_ARGS` carries
+`--tokens-in/--tokens-out/--tool-uses`, `DURATION=` the duration. A land with
+none of them warns, because its line is all `?`. If the report you transcribed
+already ends in a `usage:` line, `land` keeps that one and appends nothing — one
+usage line per run, never a real one and a `?` one.
 
 `spawn` stamps every **invariant** brief section from
 [`worker-brief-template.md`](worker-brief-template.md) — turn-end contract, load
@@ -228,6 +254,55 @@ deliberate: the ledger and the boilerplate are mechanical and must be right
 100% of the time, while the task statement and the file fence (including the
 predictable-new-file call above) are judgment the supervisor still owns. A brief
 that still contains a `SUPERVISOR:` placeholder is not ready to dispatch.
+
+**Stamp the judgment sections from files, and let spawn launch** (#2169):
+
+```bash
+make wave-spawn ISSUE=556 SLUG=triage-lane WAVE=wave/<...> \
+  TASK_FILE=.wave/briefs/556.task.md FENCE_FILE=.wave/briefs/556.fence.md \
+  WAVE_SPAWN_ARGS="--launch --dispatch omnigent-child --agent-id <id> --host-id <id>"
+```
+
+`TASK_FILE=` / `FENCE_FILE=` are stamped byte-verbatim by Python (no heredoc, so
+a backticked `make check` stays prose — wave #2226 ran one); `FENCE_FILE=`
+excludes `FENCE=`. Spawn always prints a ready-to-send **wake prompt** and the
+exact launch. `--launch` runs it: `claude-p` → the detached Launch B line with
+the absolute `.wave/worker-<n>.log`; `omnigent-child` → bind-mode
+`POST /v1/sessions` (via `omni-api.sh`, no `terminal_launch_args`), then
+`wave-record-session`, then `session-wake.sh`. Exit 6: the launch failed (the
+worker is spawned; finish by hand, and check #2332 before any retry); exit 7:
+session recorded, wake failed — re-run the wake, never relaunch. `--launch`
+refuses (exit 2) without both files, or without `--agent-id`/`--host-id`.
+
+**Both verbs also provision and pre-check** (#2539/#2540/#2541), through the
+same helpers for `wave-spawn` and `wave-worktree`:
+
+- **Venv.** The `make sync` recipe runs in the new worktree and `## Environment`
+  states its exit code. A failed sync is reported, not fatal, except under
+  `--launch`, which refuses with exit 8: the worker is briefed, not launched.
+  `--no-venv-sync` skips it, and the brief then tells the worker to run `make sync`.
+- **Delivered-but-open Q2/Q3.** Per issue (per `REFS=` for a worktree), the open-PR
+  and merged-PR-by-title searches from [`delivered-but-open.md`](delivered-but-open.md)
+  run. Any hit refuses with exit 9 unless `--allow-delivery-hits`; a failed `gh`
+  read refuses with exit 10 (`--skip-delivery-check` to go deliberately
+  unasked). The wide search only nominates (#2653). A nominee counts only if it
+  carries a `#<n>` token in its title or on a `Closes`/`Refs` reference, and is
+  not a PR into this wave branch. Q2 also drops the wave's own PR (head = wave
+  branch) and this worker's own branch. Every drop is printed. `wave-worktree`
+  never asks these searches: a fold-in refs delivered issues on purpose.
+  Dry runs print these reads without asking them.
+- **Root gate in `TASK_FILE=`** (#2654). A task file that names `make check` /
+  `make verify` gets a warning, because `## Delivery` gives the root gate to the
+  supervisor. Under `--launch` it refuses unless `--allow-root-gate`.
+- **Skill budget.** A fenced `plugins/*/skills/<x>/` path (from `FENCE=` or inside
+  `FENCE_FILE=`) adds a `## Fencing` line with `SKILL.md` size against its
+  `tests/skill_char_baselines.json` limit, so a worker knows before CI.
+
+**`--dispatch` defaults from the roster** (#2024): the one `ready` target in
+`.wave/roster.json` when exactly one maps to a mode (`omnigent-child…` →
+`omnigent-child`, `claude-p` → `claude-p`), else `omnigent-child`. Spawn prints
+`dispatch: <mode> (from <source>)` — read it. `land` takes `agent-tool` and
+`omnigent-child` workers; a `claude-p` log belongs to its redirect.
 
 Script flags reach the targets through `WAVE_SPAWN_ARGS` / `WAVE_LAND_ARGS` — a
 bare `--dry-run` on the `make` line is consumed by `make` itself, which silently
@@ -263,7 +338,8 @@ make wave-land  ... WAVE_LAND_ARGS="--relaunch 1"    # .wave/worker-<n>.r1.log
 4. **Already delivered?** (#1846) — *is an open PR racing this issue, or did a
    merged PR already deliver it?* Gates 1–3 all pass on an issue whose work
    landed five weeks ago; wave `2026-09-18-backlog` paid a full dispatch to learn
-   that. Hand-run, and a merged-PR hit is a read, never an auto-skip:
+   that. Asked by `spawn`/`worktree` themselves (#2540, below); a hit is a
+   read, never an auto-skip:
    [`delivered-but-open.md`](delivered-but-open.md).
 
 **You do not maintain the `## Workers` table.** Both `spawn` and `land` regenerate
@@ -276,12 +352,40 @@ artifact implies go on the ledger, not into the table:
 `make wave-record-status ISSUE=<n> STATUS=merged|abandoned|parked|stalled`.
 Details: [`wave-state-template.md`](wave-state-template.md).
 
+**Pass the fence at spawn** (#2419): `make wave-spawn ... FENCE="<paths>"` stamps
+the brief's `## Fencing` `Files:` line instead of a placeholder. A fenced
+`plugins/*/skills/<x>/` path adds a `SUPERVISOR:` line listing the
+`grep -rl '<x>' tests/` hits. Move the ones that cover the skill into `Files:`,
+then delete that line. `--launch` refuses any rendered brief still holding a
+`SUPERVISOR:` line, so add those tests to `FENCE=` up front (or pass `FENCE_FILE=`).
+
+**A worker with no issue of its own — a close-out review fold-in — is
+`make wave-worktree`, never `wave-spawn`** (#2021):
+`make wave-worktree SLUG=review-fix1 WAVE=wave/<...> REFS='2000 2001' [FENCE=…]`.
+It takes spawn's `TASK_FILE=` / `FENCE_FILE=`, prints the same wake prompt, and
+`WAVE_WORKTREE_ARGS="--launch --dispatch omnigent-child --agent-id … --host-id …"`
+creates, records by `KEY=` and wakes the session in one verb (#2534).
+It is `spawn` minus the honor-check and the claim (gate 1 still runs; it is a
+dispatch): no `status: in-progress` lands anywhere, the brief's `## Claim` says
+"none — keyless worker" and its `Refs` come from `REFS=`. `SLUG=` is the ledger
+**key** and must start with a letter: `.wave/worker-<key>.meta.json` (`"key"`,
+`"issue": null`), log `.wave/worker-<key>.log`, branch `worker/<key>`. `## Workers`
+renders it as `` `<key>` (refs #2000+#2001) `` and `missing-logs` reconciles its log.
+On completion address it by key, exactly like an issue worker (#2510):
+`make wave-land KEY=<key> PR=<url> REPORT_FILE=<report.md>`,
+`make wave-record-status KEY=<key> STATUS=merged PR=<n>`, and
+`make wave-record-session KEY=<key> SESSION=<sid>` — or `make wave-merge PR=<n>
+KEY=<key> REPORT_FILE=<report.md>`, which lands and records for you. Never
+hand-edit the ledger.
+
 `spawn` honor-checks every issue **before** creating the worktree and aborts on a
 claim held by another branch (`--claim-branch <supervisor-branch>` for the
 inherited case above; `--allow-claimed` to override deliberately), copies the
 gitignored env files below into the new worktree, and derives the brief's
-Environment sentence from what it actually copied. `land` is mode-A only — a
-`claude-p` log is raw stream-json and a markdown append would corrupt it.
+Environment sentence from what it actually copied. `land` takes `agent-tool` and
+`omnigent-child` runs and refuses a `claude-p` one — that log is raw stream-json
+and a markdown append would corrupt it. Its dispatch default comes from the
+launch record of the run being landed (`--relaunch`), not the newest one.
 
 ## Bootability preflight — REQUIRED before you plan the roster (#819, #825, #498)
 
@@ -556,6 +660,12 @@ live eval runs, multi-hour builds, warehouse-backed jobs:
   its inputs, how to read its output); the supervisor executes it detached, with a
   stall-aware watcher over the log ([`supervision.md`](supervision.md)).
 
+Either way the run happens: supervisor-owned is who runs it, never a wait for the
+human (`docs/process/live-steps.md`, #2567).
+
+A **cheap** live smoke is not a long run. Give it to the worker (#2652,
+[`planning-defaults.md`](planning-defaults.md#cheap-live-smokes-belong-to-the-worker-2652)).
+
 Evidence: on issue #459 the same worker twice backgrounded a live eval run and
 ended its session with "I'll continue when it finishes" — two dead runs and $6.87
 burned, even after a salvage prompt explicitly forbade it. Splitting it into
@@ -579,6 +689,10 @@ git -C "$SRC" ls-files --others --ignored --exclude-standard \
       mkdir -p "$DST/$(dirname "$f")" && cp "$SRC/$f" "$DST/$f" && echo "env: $f"
     done
 ```
+
+`wave-spawn --env-path <rel>` does this for you, from the supervisor worktree
+first, then the main clone, or exactly `ENV_FROM=<dir>` (#2169); the brief's
+Environment sentence names each copied file and its source.
 
 (Tracked `template.env` files are unaffected — `--others` lists only untracked
 files, so this copies exactly the local-only ones.) Then tell the worker in its
@@ -621,7 +735,7 @@ keyed by ISSUE, not by terminal id:
    "worktree": "/abs/path", "wave_branch": "wave/<YYYY-MM-DD>-<slug>",
    "model": "<pinned>", "session": "<Omnigent conversation_id>",
    "started": "2026-07-30T18:04:11Z", "log": ".wave/worker-556.log", "pr": null,
-   "dispatch": "agent-tool"}
+   "dispatch": "omnigent-child"}
   ```
 
   `"issues"` lists every issue a multi-issue worker carries (primary first) and
@@ -646,12 +760,6 @@ keyed by ISSUE, not by terminal id:
 
 Never let a resumed session land under a fresh, unrelated name; that is exactly
 the split-attribution failure #570 was filed for.
-
-## Executor note
-
-`rpw build --live` speaks wave topology via `--pr-base <wave-branch>` +
-`--no-merge` (#346). If an executor fights wave rules by construction, **fall
-back to a launch mode above rather than patching mid-wave.**
 
 ## Base-branch resolution (#1164)
 

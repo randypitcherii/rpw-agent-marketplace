@@ -7,8 +7,7 @@ description: Use when starting, scaffolding, or structuring an experiment/evalua
 
 House structure for an **experiment/evaluation** in the shareables repo: a folder
 whose deliverable is an *answered question backed by live evidence* — not a demo,
-not a library. The structure exists so results are comparable across experiments
-and so nobody re-derives conventions by archaeology from prior folders.
+not a library — kept uniform so results compare across experiments.
 
 **The ethos: settable ≠ enforcing.** An experiment's claims are only as good as
 the live responses behind them. Every ✅/❌ in the findings matrix must trace to a
@@ -23,8 +22,7 @@ never asserted either way.
 - Deciding where a new script, result artifact, or findings doc belongs
 - Reviewing an experiment PR for structural conventions
 
-**Not for:** `shareables/databricks/libraries/` or `demos/` folders (they ship a
-product — though `hive_to_delta` shows how an experiment graduates into one), or
+**Not for:** `databricks/libraries/` or `demos/` folders (they ship a product), or
 agent-runtime evals (`libs/rpw_evals` in the rpw monorepo).
 
 ## The scaffold
@@ -64,9 +62,8 @@ only → no `tests/`). Never omit the Makefile, README matrix, or `results/`.
 
 ## Makefile — the command surface
 
-Every interaction goes through `make`. Someone who clones the repo should be able
-to run `make` (bare) and see everything the experiment can do. Copy-paste starting
-file: [`templates.md`](templates.md).
+Every interaction goes through `make`; bare `make` shows everything the experiment
+can do. Starting file: [`templates.md`](templates.md).
 
 Rules:
 
@@ -118,27 +115,23 @@ mechanics — always `uv run`, never bare `python3` or pip). Starting file:
   `make test-infrastructure`, gated behind `auth-check`. Add scenario markers
   (e.g. `cross_region`) with their own targets when the matrix calls for them.
 
-Whether `uv.lock` is committed follows the *shareables repo's* convention (it
-commits locks for reproducibility) — not the rpw monorepo's gitignore rule,
-which exists for registry-proxy reasons specific to that repo.
+Commit `uv.lock` — the *shareables* convention, for reproducibility (the rpw
+monorepo's gitignore rule is specific to its registry proxy).
 
 ## scripts/ — numbered evidence generators
 
-- **One numbered script per matrix row** (`01_...py`, `02_...py`), named after
-  the question it answers, grouped in a topic subdirectory when there are many.
-  The number ties script → matrix row → results entry.
-- **`_common.py`** holds shared helpers: auth/token acquisition, host
-  resolution, section/ok/fail output helpers, and the writer for
-  `results/matrix_results.json` — which refuses to write on an unproven or
-  collided identity. Scripts stay thin and readable.
-- **`verify.py`** is the end-to-end auth proof `make verify` runs. It makes one
-  real request per principal, asserts their identities are distinct, and prints
-  exactly what worked (route, identity, status code).
+- **One numbered script per matrix row** (`01_...py`), named after its question,
+  grouped by topic. The number ties script → matrix row → results entry.
+- **`_common.py`** holds shared helpers: auth, host resolution, output helpers,
+  and the `results/matrix_results.json` writer — which refuses to write on an
+  unproven or collided identity.
+- **`verify.py`** (`make verify`) makes one real request per principal, asserts
+  distinct identities, and prints route, identity, and status code.
 - **`scripts/README.md`** documents prerequisites, what each script does, and
   the scenarios it sets up. Failure output is data: print rejected-route bodies
   and error shapes — *which* thing failed and *how* is often the finding.
-- Scripts must be idempotent or clean up after themselves (test principals,
-  temp tables) so a matrix row can be re-run for reproduction.
+- Scripts are idempotent or clean up (test principals, temp tables) so a row
+  can be re-run.
 
 ## results/ — committed evidence
 
@@ -171,6 +164,15 @@ The README leads with the question and lands on a **results matrix**:
 - Longer analysis goes in **Key Findings** sections under the matrix, and deep
   write-ups in `docs/research/`; design docs in `docs/plans/` are dated.
 
+## Paused experiments — the "resume here" header
+
+When rows stay ❓ awaiting an external unblock (a capability not yet enabled on the
+environment), put a **⏸️ Paused** blockquote directly under the title, above the
+matrix: `Waiting on` (capability, public-docs terms), `Blocks` (matrix rows),
+`To resume` (an executable preflight + re-run command), `Last checked` (a date).
+Delete it when the block clears; the resolved blocker moves into Key Findings.
+Template, rules, and sanitization: [`resume-header.md`](resume-header.md).
+
 ## terraform/ — infra as code, state never committed
 
 When the experiment needs cloud infrastructure:
@@ -180,8 +182,7 @@ When the experiment needs cloud infrastructure:
 - `terraform/.gitignore` covers `*.tfstate*`, `.terraform/`, `terraform.tfvars`.
 - `tf-init` / `tf-plan` / `tf-apply` / `tf-destroy` make targets wrap the
   lifecycle; `terraform/README.md` says what gets created and what it costs.
-- Tear-downable by design: the experiment ends with `make tf-destroy`, not an
-  orphaned sandbox.
+- The experiment ends with `make tf-destroy`, not an orphaned sandbox.
 
 ## Public-repo hygiene
 
@@ -189,20 +190,21 @@ The shareables repo is public. In every committed artifact — code, results
 JSON, docs, tfvars examples:
 
 - **Placeholders only** for hosts, account ids, emails, bucket names
-  (`https://my-workspace.cloud.databricks.com`, `my_catalog`). Real coordinates
-  live in `.env` / `terraform.tfvars`, both gitignored, with committed
-  `.example` twins (the **env-preferences** skill covers the env-file pattern).
+  (`my_catalog`). Real coordinates live in gitignored `.env` / `terraform.tfvars`
+  with committed `.example` twins (see **env-preferences**).
 - **No customer-identifying data** in results artifacts, research docs, or
   script output committed to `results/` — scrub before committing.
 - **No PATs, no secrets** — SSO/OAuth profiles only; helpers should refuse
   `dapi` tokens on sight.
+- **Blockers name a capability, never a person, customer, account id, internal
+  codename, or timeline** — the natural phrasing of a blocker leaks all five.
 
 ## Composes with
 
 - **python-with-uv** — env/deps mechanics; this skill only fixes the pytest
   marker tiers and make-target mapping.
-- **databricks-jobs** — if the experiment schedules jobs: DABs-defined,
-  profile auth, CLI log debugging. Don't hand-roll job wiring here.
+- **databricks-jobs** — if the experiment schedules jobs; don't hand-roll job
+  wiring here.
 - **env-preferences** — the `.env.example` / gitignored-`.env` pattern.
 
 ## Exemplars

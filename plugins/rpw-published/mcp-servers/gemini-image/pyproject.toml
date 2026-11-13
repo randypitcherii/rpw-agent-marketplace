@@ -1,10 +1,11 @@
 [project]
 name = "gemini-image"
-version = "2026.08.0901"
+version = "2026.10.3003"
 description = "MCP server for Gemini native image generation and editing"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "databricks-sdk>=0.105.0",
     "fastmcp>=3.0.0",
     "google-genai>=1.0.0",
     "python-dotenv>=1.2.1",

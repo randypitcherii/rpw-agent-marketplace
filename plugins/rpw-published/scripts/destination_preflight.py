@@ -27,10 +27,11 @@ classes of target:
 "GitHub was never asked" must not be the same value, because a preflight that
 fails open manufactures confidence — it is worse than no preflight, since a
 worker reasonably treats a pass as consent. This wave's counterbalance review
-found that exact conflation three times in ``automation/bin/wave-liveness.py``;
-PR #1910 fixed it with a tri-state in ``Gh._json``, and this follows that shape
-rather than inventing a second one. Every failed read lands on ``unprovable``,
-and ``unprovable`` exits nonzero.
+found that exact conflation three times in ``automation/bin/wave-liveness.py``
+(fixed in PR #1910). The rule is stated once, with why each module names its
+values for its own domain, in
+``plugins/rpw-published/skills/automation-standards/unasked-is-not-no.md``.
+Every failed read lands on ``unprovable``, and ``unprovable`` exits nonzero.
 
 What this deliberately does NOT do:
 
@@ -76,9 +77,10 @@ import subprocess
 import sys
 from typing import Callable, Optional, Sequence
 
-#: Outcome of one read. Tri-state on purpose, the same shape (and for the same
-#: reason) as ``automation/bin/wave-liveness.py``: an answer and the absence of
-#: one are different values. ``empty`` counts as a failure deliberately — an
+#: Outcome of one read. Tri-state on purpose — the rule is stated once in
+#: ``plugins/rpw-published/skills/automation-standards/unasked-is-not-no.md``:
+#: an answer and the absence of one are different values. ``empty`` counts as a
+#: failure deliberately — an
 #: exit-0 ``gh --json`` that prints nothing is not the answer "no", it is no
 #: answer at all.
 READ_OK = "ok"

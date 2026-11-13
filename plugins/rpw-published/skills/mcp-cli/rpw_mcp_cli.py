@@ -1,22 +1,32 @@
 #!/usr/bin/env python3
-"""Discover and call installed RPW MCP servers through MCP Inspector's CLI.
+"""Discover and call installed RPW MCP servers from the shell, through mcporter (#2623).
 
-The server remains the source of truth for schemas, auth, policy, and execution.
-This wrapper only resolves versioned plugin installs, creates an ephemeral client
-config, and bounds output for shell-only agent harnesses.
+The servers stay the source of truth for schemas, auth, policy and execution. This
+shim only builds the one mcporter config for every installed rpw plugin
+(``mcp-servers/rpw/mcp_runtime.py``), and bounds the output under the house CLI output
+contract (docs/process/cli-output-contract.md).
+
+``tools`` and ``call`` speak MCP to a short-lived ``mcporter serve --stdio --servers
+<one>`` child, exactly as the plugin's `rpw` entry (``front.py``) does, with the same
+config and env. So the shell and the MCP entry share the daemon's warm backends, and
+the output is the full MCP result (every content block, ``structuredContent``,
+``isError``), not ``mcporter call``'s lossy JSON rendering. A warm call takes ~1.2s.
+
+The MCP client is FastMCP's. This file starts under any Python; when FastMCP is not
+importable it re-runs itself in the `rpw` entry's own venv (``mcp-servers/rpw``),
+through ``lib/backend_launch.py`` so that venv is synced only when it changed.
+Decision: docs/decisions/ADR-2026-10-28-mcporter-runtime.md.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
-import shutil
-import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -31,118 +41,95 @@ DEFAULT_MAX_BYTES = 8 * 1024
 FAILURE_MAX_LINES = 40
 
 CACHE_ENV = "RPW_MCP_CACHE_ROOT"
-BACKENDS_MANIFEST = Path("mcp-servers") / "rpw" / "servers.json"
 
 # Spill files this CLI creates, and how long one stays readable. `sweep_spills` deletes
 # only this prefix, so it can never touch a file it did not name (#1972).
 SPILL_PREFIX = "rpw-mcp-output-"
 SPILL_MAX_AGE_SECONDS = 24 * 60 * 60
 
+# mcporter's own call deadline (default 60s) is the one that fires; set it above every
+# server-side limit (#2623 part B: each tool answers inside 45s) so a slow tool returns
+# its own envelope rather than a transport timeout. `--timeout` / the env override it.
+DEFAULT_CALL_TIMEOUT_SECONDS = 120
+CALL_TIMEOUT_ENV = "RPW_MCP_CALL_TIMEOUT_SECONDS"
+# A cold `tools` list can include a backend's first `uv sync`.
+LIST_TIMEOUT_MS = 180_000
+# Set on the re-run inside the `rpw` entry's venv, so a venv without FastMCP fails
+# loudly instead of re-running forever.
+IN_RUNTIME_VENV_ENV = "RPW_MCP_CLI_IN_RUNTIME_VENV"
 
-# MCP Inspector does not pass the caller's environment to a stdio server, so a
-# documented per-call opt-out (`SLACK_SEND_CONFIRM=0 rpw-mcp-cli call ...`) would
-# never arrive. Forward exactly the house send-confirm switches, nothing else.
-FORWARDED_SUFFIX = "_SEND_CONFIRM"
+HERE = Path(__file__).resolve().parent
+PLUGIN_ROOT = HERE.parent.parent
+RUNTIME_DIR = Path("mcp-servers") / "rpw"
 
 
-@dataclass(frozen=True)
-class Server:
-    plugin: str
-    name: str
-    root: Path
-    config: dict[str, Any]
-
-    @property
-    def qualified_name(self) -> str:
-        return f"{self.plugin}:{self.name}"
+def _default_cache_root() -> Path:
+    return Path.home() / ".claude" / "plugins" / "cache" / "rpw-agent-marketplace"
 
 
 def _cache_root() -> Path:
     configured = os.environ.get(CACHE_ENV)
-    if configured:
-        return Path(configured).expanduser()
-    return Path.home() / ".claude" / "plugins" / "cache" / "rpw-agent-marketplace"
+    return Path(configured).expanduser() if configured else _default_cache_root()
 
 
-def _latest_install(plugin_dir: Path) -> Path | None:
-    candidates = [path for path in plugin_dir.iterdir() if path.is_dir()]
-    return max(candidates, key=lambda path: path.name) if candidates else None
+def _release_plugins_root() -> Path:
+    """Mirrors ``mcp_runtime.release_plugins_root`` (needed before that module loads)."""
+    home = os.environ.get("RPW_MARKETPLACE_HOME") or "~/.rpw/internal-marketplace"
+    return Path(home).expanduser() / "current" / "plugins"
 
 
-def _expand(value: Any, plugin_root: Path) -> Any:
-    if isinstance(value, str):
-        return value.replace("${CLAUDE_PLUGIN_ROOT}", str(plugin_root))
-    if isinstance(value, list):
-        return [_expand(item, plugin_root) for item in value]
-    if isinstance(value, dict):
-        return {key: _expand(item, plugin_root) for key, item in value.items()}
-    return value
+def _load_runtime():
+    """Import ``mcp_runtime`` from this plugin, the newest installed one, or the release."""
+    candidates = [PLUGIN_ROOT / RUNTIME_DIR]
+    published = _default_cache_root() / "rpw-published"
+    if published.is_dir():
+        installs = sorted((p for p in published.iterdir() if p.is_dir()), key=lambda p: p.name)
+        candidates += [p / RUNTIME_DIR for p in reversed(installs)]
+    candidates.append(_release_plugins_root() / "rpw-published" / RUNTIME_DIR)
+    for directory in candidates:
+        if (directory / "mcp_runtime.py").is_file():
+            sys.path.insert(0, str(directory))
+            import mcp_runtime
 
-
-def discover_servers(cache_root: Path | None = None) -> list[Server]:
-    root = cache_root or _cache_root()
-    if not root.is_dir():
-        raise RuntimeError(
-            f"RPW plugin cache not found at {root}. Install the RPW plugins or set {CACHE_ENV}."
-        )
-
-    found: list[Server] = []
-    for plugin_dir in sorted(root.glob("rpw-*")):
-        if not plugin_dir.is_dir():
-            continue
-        install = _latest_install(plugin_dir)
-        if install is None:
-            continue
-        # A plugin's .mcp.json holds one aggregator entry that fronts every backend
-        # (#2215). A one-shot shell call should start one server, not all of them, so
-        # address the backends it lists directly.
-        config_path = install / BACKENDS_MANIFEST
-        if not config_path.is_file():
-            config_path = install / ".mcp.json"
-        if not config_path.is_file():
-            continue
-        try:
-            payload = json.loads(config_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"Cannot read {config_path}: {exc}") from exc
-        servers = payload.get("mcpServers", {})
-        if not isinstance(servers, dict):
-            raise TypeError(f"Invalid mcpServers object in {config_path}")
-        for name, config in sorted(servers.items()):
-            if isinstance(config, dict):
-                found.append(
-                    Server(
-                        plugin=plugin_dir.name,
-                        name=name,
-                        root=install,
-                        config=_expand(config, install),
-                    )
-                )
-    return found
-
-
-def resolve_server(name: str, servers: list[Server]) -> Server:
-    if ":" in name:
-        matches = [server for server in servers if server.qualified_name == name]
-    else:
-        matches = [server for server in servers if server.name == name]
-    if not matches:
-        available = ", ".join(server.qualified_name for server in servers) or "none"
-        raise ValueError(f"Unknown MCP server '{name}'. Available: {available}")
-    if len(matches) > 1:
-        choices = ", ".join(server.qualified_name for server in matches)
-        raise ValueError(f"MCP server '{name}' is ambiguous; use one of: {choices}")
-    return matches[0]
-
-
-def _inspector_path() -> str:
-    path = shutil.which("mcp-inspector")
-    if path:
-        return path
+            return mcp_runtime
     raise RuntimeError(
-        "mcp-inspector is not installed. Run "
-        "`npm install -g @modelcontextprotocol/inspector`, then retry."
+        "the rpw MCP runtime (mcp-servers/rpw/mcp_runtime.py) was not found; "
+        "update the rpw-published plugin"
     )
+
+
+def runtime():
+    """The prepared mcporter runtime for the installed plugins.
+
+    The Claude Code plugin cache is the default source, so the shell shares warm
+    backends with Claude Code's `rpw` entry. With no cache (a Sandbox), the unpacked
+    internal release (#2630). A checkout with neither serves itself.
+    """
+    mcp_runtime = _load_runtime()
+    found = mcp_runtime.installed_plugins()
+    if found is not None:
+        base, plugins = found
+    elif os.environ.get(CACHE_ENV):
+        raise RuntimeError(f"RPW plugin cache not found at {_cache_root()} (from {CACHE_ENV}).")
+    else:
+        base, plugins = mcp_runtime.plugins_for_root(PLUGIN_ROOT)
+    if not plugins:
+        raise RuntimeError(
+            f"No RPW plugins with MCP servers found under {base}. Install the RPW "
+            f"plugins or set {CACHE_ENV}."
+        )
+    return mcp_runtime.prepare(base, plugins)
+
+
+def resolve_server(name: str, backends: list) -> Any:
+    if ":" in name:
+        matches = [b for b in backends if b.qualified_name == name]
+    else:
+        matches = [b for b in backends if b.name == name]
+    if not matches:
+        available = ", ".join(b.qualified_name for b in backends) or "none"
+        raise ValueError(f"Unknown MCP server '{name}'. Available: {available}")
+    return matches[0]
 
 
 def _spill(payload: bytes, suffix: str) -> str:
@@ -267,59 +254,22 @@ def _report_failure(stderr: bytes, stdout: bytes, max_bytes: int | None) -> None
     )
 
 
-def _bridge_config(config: dict[str, Any]) -> dict[str, Any]:
-    """The server's config plus the caller's send-confirm switches (#2142).
-
-    Servers with outbound tools gate them in-process on every surface (#2179), so the
-    one thing the bridge must do is let a confirmed opt-out reach them.
-    """
-    if "url" in config:  # not spawned by us: an env block would mean nothing
-        return config
-    switches = {k: v for k, v in os.environ.items() if k.endswith(FORWARDED_SUFFIX)}
-    if not switches:
-        return config
-    return {**config, "env": {**(config.get("env") or {}), **switches}}
+def _call_timeout_seconds(flag: float | None) -> float:
+    if flag is not None:
+        return flag
+    raw = os.environ.get(CALL_TIMEOUT_ENV, "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return DEFAULT_CALL_TIMEOUT_SECONDS
 
 
-def _invoke(server: Server, method_args: list[str], max_bytes: int | None) -> int:
-    config = {"mcpServers": {server.name: _bridge_config(server.config)}}
-    config_file: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", prefix="rpw-mcp-", suffix=".json", delete=False
-        ) as handle:
-            json.dump(config, handle)
-            config_file = handle.name
-        os.chmod(config_file, 0o600)
-        command = [
-            _inspector_path(),
-            "--cli",
-            "--config",
-            config_file,
-            "--server",
-            server.name,
-            "--format",
-            "json",
-            *method_args,
-        ]
-        result = subprocess.run(
-            command, text=False, capture_output=True, timeout=180, check=False
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"MCP call timed out after {exc.timeout} seconds") from exc
-    finally:
-        if config_file:
-            Path(config_file).unlink(missing_ok=True)
-
-    if result.returncode != 0:
-        _report_failure(result.stderr, result.stdout, max_bytes)
-        return result.returncode
-
-    output = result.stdout
+def _emit(output: bytes, max_bytes: int | None) -> None:
     if max_bytes is None or len(output) <= max_bytes:
         sys.stdout.buffer.write(output)
-        return 0
-
+        return
     output_path = _spill(output, ".json")
     preview = output[:max_bytes].decode("utf-8", errors="replace")
     print(
@@ -336,6 +286,107 @@ def _invoke(server: Server, method_args: list[str], max_bytes: int | None) -> in
             ensure_ascii=False,
         )
     )
+
+
+def ensure_mcp_client(argv: list[str]) -> None:
+    """Re-run this CLI in the `rpw` entry's venv when FastMCP is not importable here.
+
+    That venv is the one the plugin's MCP entry runs in, so it always has FastMCP, and
+    ``backend_launch.py`` keeps it to a ``uv run --no-sync`` (no resolution) once it is
+    synced. A ``uv run --with fastmcp`` would re-resolve on every call (5-10s measured).
+    """
+    try:
+        import fastmcp  # noqa: F401
+        return
+    except ImportError:
+        pass
+    if os.environ.get(IN_RUNTIME_VENV_ENV):
+        raise RuntimeError("FastMCP is not importable even in the rpw entry's venv; "
+                           "delete mcp-servers/rpw/.venv in the plugin and retry")
+    project = Path(_load_runtime().__file__).resolve().parent
+    launcher = project.parent / "lib" / "backend_launch.py"
+    command = ["uv", "run", "--no-project", "--quiet", "python", str(launcher),
+               "run", "--project", str(project), "python", str(Path(__file__).resolve()), *argv]
+    os.execvpe("uv", command, {**os.environ, IN_RUNTIME_VENV_ENV: "1"})
+
+
+def _strip_bridge_names(server: str, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Tools as their backend names them, not as ``mcporter serve`` namespaces them."""
+    prefix = f"{server}__"
+    tag = f"[{server}] "
+    out = []
+    for tool in tools:
+        tool = dict(tool)
+        if tool.get("name", "").startswith(prefix):
+            tool["name"] = tool["name"][len(prefix):].replace("%5F", "_").replace("%25", "%")
+        if isinstance(tool.get("description"), str) and tool["description"].startswith(tag):
+            tool["description"] = tool["description"][len(tag):]
+        out.append(tool)
+    return out
+
+
+async def _over_serve(rt, server: str, method: str, tool: str, arguments: dict[str, Any],
+                      timeout: float, log: Path) -> dict[str, Any]:
+    """One MCP request to a ``mcporter serve --stdio`` child serving only ``server``.
+
+    Serving one server keeps the SDK's validation re-list (its first structured result
+    lists tools) to that server's warm daemon list, never every backend in turn.
+    """
+    from fastmcp import Client
+    from fastmcp.client.transports import StdioTransport
+
+    argv = rt.argv("serve", "--stdio", "--servers", server)
+    transport = StdioTransport(argv[0], argv[1:], env=rt.env, cwd=str(rt.config_path.parent),
+                               keep_alive=False, log_file=log)
+    async with Client(transport, timeout=timeout, init_timeout=timeout) as client:
+        if method == "tools":
+            listed = await client.list_tools_mcp()
+            dumped = listed.model_dump(mode="json", by_alias=True, exclude_none=True)
+            dumped["tools"] = _strip_bridge_names(server, dumped.get("tools", []))
+            return {"server": server, "result": dumped}
+        # Imported late: front.py's encoding is the one place that mirrors serve's.
+        sys.path.insert(0, str(Path(_load_runtime().__file__).resolve().parent))
+        from front import bridged_name
+
+        result = await client.call_tool_mcp(bridged_name(server, tool), arguments, timeout=timeout)
+        return {"result": result.model_dump(mode="json", by_alias=True, exclude_none=True)}
+
+
+def _invoke(rt, server: str, method: str, tool: str, arguments: str, timeout: float,
+            max_bytes: int | None) -> int:
+    """Run one request and print it under the output contract. Returns the exit code."""
+    fd, log_name = tempfile.mkstemp(prefix=f"{SPILL_PREFIX}serve-", suffix=".log")
+    os.close(fd)
+    log = Path(log_name)
+    failure = ""
+    payload: dict[str, Any] = {}
+    try:
+        payload = asyncio.run(asyncio.wait_for(
+            _over_serve(rt, server, method, tool, json.loads(arguments), timeout, log),
+            timeout + 15,
+        ))
+    except TimeoutError:
+        failure = f"rpw-mcp-cli: {server}: no answer within {timeout:g}s"
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - an MCP error, or a dead serve child
+        failure = f"rpw-mcp-cli: {server}: {type(exc).__name__}: {exc}"
+    try:
+        stderr = log.read_bytes()
+    except OSError:
+        stderr = b""
+    log.unlink(missing_ok=True)
+    if failure:
+        _report_failure(stderr, b"", max_bytes)
+        print(failure, file=sys.stderr)
+        return 1
+    output = (json.dumps(payload, ensure_ascii=False) + "\n").encode()
+    if payload.get("result", {}).get("isError"):
+        # A tool-level error: the result is the failure detail, so it goes inline
+        # (with whatever the runtime logged), never behind a bare pointer.
+        _report_failure(stderr, output, max_bytes)
+        return 1
+    _emit(output, max_bytes)
     return 0
 
 
@@ -396,10 +447,10 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("servers", help="list installed RPW MCP servers")
 
     tools = commands.add_parser("tools", help="list a server's tools and input schemas")
-    tools.add_argument("server", help="server name or plugin:server when ambiguous")
+    tools.add_argument("server", help="server name (or plugin:server)")
 
     call = commands.add_parser("call", help="call one MCP tool")
-    call.add_argument("server", help="server name or plugin:server when ambiguous")
+    call.add_argument("server", help="server name (or plugin:server)")
     call.add_argument("tool", help="tool name from the tools command")
     call.add_argument(
         "--json",
@@ -415,6 +466,13 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="KEY=PATH",
         help="set string argument KEY to the contents of PATH (repeatable)",
     )
+    call.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=f"call deadline (default {DEFAULT_CALL_TIMEOUT_SECONDS}, env {CALL_TIMEOUT_ENV})",
+    )
     return parser
 
 
@@ -427,20 +485,19 @@ def main(argv: list[str] | None = None) -> int:
     max_bytes: int | None = None if args.full else args.max_bytes
     sweep_spills()  # silent: the contract owns this stdout (#1972)
     try:
-        servers = discover_servers()
+        rt = runtime()
         if args.command == "servers":
             rows = []
-            for server in servers:
-                transport = "http" if "url" in server.config else "stdio"
+            for backend in rt.backends:
                 rows.append(
                     {
-                        "name": server.name,
-                        "qualified_name": server.qualified_name,
-                        "plugin": server.plugin,
-                        "transport": transport,
+                        "name": backend.name,
+                        "qualified_name": backend.qualified_name,
+                        "plugin": backend.plugin,
+                        "transport": backend.transport,
                         **(
-                            {"command": server.config.get("command", "")}
-                            if transport == "stdio"
+                            {"command": backend.spec.get("command", "")}
+                            if backend.transport == "stdio"
                             else {}
                         ),
                     }
@@ -448,19 +505,15 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"servers": rows}, ensure_ascii=False))
             return 0
 
-        server = resolve_server(args.server, servers)
+        server = resolve_server(args.server, rt.backends)
+        ensure_mcp_client(sys.argv[1:] if argv is None else argv)
         if args.command == "tools":
-            method_args = ["--method", "tools/list"]
-        else:
-            method_args = [
-                "--method",
-                "tools/call",
-                "--tool-name",
-                args.tool,
-                "--tool-args-json",
-                tool_arguments(args.json, args.arg_file),
-            ]
-        return _invoke(server, method_args, max_bytes)
+            return _invoke(rt, server.name, "tools", "", "{}", LIST_TIMEOUT_MS / 1000, max_bytes)
+        timeout = _call_timeout_seconds(args.timeout)
+        if timeout <= 0:
+            parser.error("--timeout must be positive")
+        arguments = tool_arguments(args.json, args.arg_file)
+        return _invoke(rt, server.name, "call", args.tool, arguments, timeout, max_bytes)
     except ValueError as exc:
         parser.error(str(exc))
     except (RuntimeError, TypeError) as exc:

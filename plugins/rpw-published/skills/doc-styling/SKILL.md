@@ -111,7 +111,7 @@ Write for scanning, the way a well-structured internal email or technical note r
 ## Render gotchas — google-docs MCP
 
 - **Check formatting with `gdocs_lint`, never by reading the doc back** (#2001). After any
-  Docs write, call `gdocs_lint(doc_id, tab_id)` (shell: `rpw-mcp-cli call google-docs gdocs_lint --json '{"doc_id":"DOC","tab_id":"T"}'`).
+  Docs write, call `gdocs_lint(doc_id, tab_id)` (shell: `rpw mcp call google-docs gdocs_lint --json '{"doc_id":"DOC","tab_id":"T"}'`).
   It compares every paragraph and run to `house_style.json` in code and returns
   `{ok, errors, warnings, by_rule, violations}` with no doc content. Report that result.
   Do not re-read the tab to check spacing, fonts or bullets. Warnings (non-dash bullets,

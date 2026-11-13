@@ -9,26 +9,27 @@ the other, not both. This is an explicit flag, with no `@path` magic, because a 
 string argument may itself start with `@`.
 
 ```bash
-"$MCP_CLI" call google-docs gdocs_create --json '{"title":"Q3 notes"}' \
+rpw mcp call google-docs gdocs_create --json '{"title":"Q3 notes"}' \
   --arg-file content=body.md
 ```
 
-## Unwrapping the result
+## Reading the result
 
-A tool's own JSON arrives as a string at `.result.structuredContent.result`, so it
-takes two `jq` passes. Use `--full` inside a pipeline so a large result is never
-swapped for a preview.
+`call` prints the full MCP result under `.result`: every content block,
+`structuredContent` and `isError`. A FastMCP tool's own JSON arrives as a string at
+`.result.structuredContent.result`, so it takes two `jq` passes. `tools` prints the
+tool list at `.result.tools[]`. Use `--full` inside a pipeline so a large result is
+never swapped for a preview.
 
 ## Chaining calls in one shell call
 
-Each call is a cold process taking several seconds. One shell call that chains N
-operations still replaces N model turns, and it keeps the intermediate payloads out of
-context:
+Each warm call takes about a second. One shell call that chains N operations still
+replaces N model turns, and it keeps the intermediate payloads out of context:
 
 ```bash
-"$MCP_CLI" --full call google-docs gdocs_list | jq -r '.result.structuredContent.result' \
+rpw mcp --full call google-docs gdocs_list | jq -r '.result.structuredContent.result' \
   | jq -r '.files[].id' | while read -r id; do
-    "$MCP_CLI" --full call google-docs gdocs_read --json "{\"doc_id\":\"$id\"}" \
+    rpw mcp --full call google-docs gdocs_read --json "{\"doc_id\":\"$id\"}" \
       | jq -r '.result.structuredContent.result' | jq -r '.title'
   done
 ```

@@ -172,7 +172,7 @@ class TestJiraShapedToolCalls(unittest.TestCase):
     def setUp(self):
         self.env = {
             "UC_PROXY_CONNECTION_NAME": "jira-mcp",
-            "UC_PROXY_PROFILE": "logfood",
+            "UC_PROXY_PROFILE": "example-profile",
         }
         uc_proxy_client.reset_workspace_client()
         self._patcher = patch("databricks.sdk.WorkspaceClient")

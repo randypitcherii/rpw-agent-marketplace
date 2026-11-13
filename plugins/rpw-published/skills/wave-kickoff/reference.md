@@ -220,6 +220,11 @@ waves touch: <root Makefile (its #x), pyproject.toml (its #y), ...>.
   worker session is yours to run: the worker delivers code + run protocol, you
   execute it detached with a **stall-aware** watcher (no log growth for N minutes
   with the process alive, #497), not just an exit/crash watcher.
+- **Gated deliverables (#1116):** a brief cannot carry authorization, so never
+  write "the user authorized X" into a worker brief to clear a classifier-gated
+  action. The worker delivers around it and names the denied command; you apply
+  it under live approval (wave-supervisor `supervision.md`, "Applying a worker's
+  gated hand-off").
 
 ## Topology (non-negotiable)
 
@@ -273,7 +278,7 @@ printf 'probe-before\n' > "$WT/.wave-probe.txt"
 
 ```
 sys_session_create(
-  agent_id = <the claude-native builtin from sys_agent_list>,
+  agent_id = <the pi-native builtin from sys_agent_list>,
   title    = "<repo>::wave-supervisor/<date>-<slug>::<date>::probe — pre-dispatch write probe",
   message  = "One task, then stop: Edit the file <WT>/.wave-probe.txt so it reads
               probe-after instead of probe-before. Do nothing else. Reply DONE.")
@@ -316,6 +321,10 @@ The probe is created over REST, so it is **not** in your spawn tree and
 command either. `session-close` sends the same PATCH the tool sends
 (`omnigent.closed` + `archived: true`, which reaps its processes) and reads it
 back (#2030).
+
+Archiving can delete the session's bound worktree (#2571). A probe bound to `$WT` would
+take the staged `WAVE-BRIEF.md` with it, so `session-close` refuses it (exit 6). Never
+`FORCE=1` that one. Rename it 🛑 and leave it until the supervisor worktree's teardown.
 
 ## Launch payloads — path A (default) and path B (fallback)
 
@@ -386,14 +395,21 @@ the agent's `os_env.cwd` boundary.
 ```jsonc
 // POST <the configured server>/v1/sessions
 {
-  "agent_id": "<the claude-native builtin from GET /v1/agents>",
+  "agent_id": "<the pi-native builtin from GET /v1/agents>",
   "host_id":  "<an online id from GET /v1/hosts>",
   "title":    "⏳ 🌊 <repo>::wave/<date>-<slug>::<date>::wave_supervisor — <wave-summary>",
   "workspace": "<absolute supervisor worktree path>",
-  "git": { "branch_name": "wave-supervisor/<date>-<slug>", "existing_worktree": true },
-  "terminal_launch_args": ["--permission-mode", "bypassPermissions"]
+  "git": { "branch_name": "wave-supervisor/<date>-<slug>", "existing_worktree": true }
 }
 ```
+
+**Pi is the default harness (#2491); there is no `terminal_launch_args` on it.**
+`--permission-mode` is a Claude flag: Pi prints `Unknown option: --permission-mode`, exits
+status 1, and the session fails `required_terminal_exited` without a single tool call
+(measured 2026-10-24). Pi has no permission classifier, so the Claude-auto-mode block that
+failed the same day's probe cannot occur. The Claude alternative (explicit request, or a
+host where the managed-policy override is installed) takes the `claude-native` builtin plus
+`"terminal_launch_args": ["--permission-mode", "bypassPermissions"]`.
 
 ```jsonc
 // REQUIRED second call — create seeds history, it does not start a turn.
@@ -466,15 +482,14 @@ source "$LAUNCH/omni-api.sh"; OMNI=$API_BASE
 curl() { command curl ${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"} "$@"; }  # auth on every call
 # Run the unique-project lookup above now; it sets PROJECT_ID or leaves it empty.
 # Lists come bare or wrapped ({"data": [...]}, hosts: {"hosts": [...]}); hosts say online or status=="online".
-AGENT=$(curl -sf "$OMNI/v1/agents" | jq -r '[(.data // .)[]|select(.harness=="claude-native")][0].id')
+AGENT=$(curl -sf "$OMNI/v1/agents" | jq -r '[(.data // .)[]|select(.harness=="pi-native")][0].id')
 HOST=$(curl -sf "$OMNI/v1/hosts"  | jq -r '[(.hosts // .data // .)[]|select(.online == true or .status == "online")][0] | .host_id // .id')
 SID=$(curl -sf "$OMNI/v1/sessions" -H 'content-type: application/json' \
   -d "$(jq -n --arg a "$AGENT" --arg h "$HOST" --arg w "$WT" \
             --arg b wave-supervisor/<date>-<slug> \
             --arg t "⏳ 🌊 <repo>::wave/<date>-<slug>::<date>::wave_supervisor — <wave-summary>" \
     '{agent_id:$a, host_id:$h, title:$t, workspace:$w,
-      git:{branch_name:$b, existing_worktree:true},
-      terminal_launch_args:["--permission-mode","bypassPermissions"]}')" | jq -r .id)
+      git:{branch_name:$b, existing_worktree:true}}')" | jq -r .id)   # Pi: no terminal_launch_args
 # File the new session before waking it; a failed PATCH is non-fatal.
 if [ -n "$PROJECT_ID" ]; then
   if ! curl -fsS -X PATCH "$OMNI/v1/sessions/$SID" \
@@ -491,7 +506,7 @@ bash "$LAUNCH/session-wake.sh" "$SID" "<wave-summary>. Read WAVE-BRIEF.md in you
 ```
 # 3b. FALLBACK ONLY — path B, when no REST port answers. One call, but no bound
 #     workspace and no --permission-mode: ship the Step 0 block and expect the wedge.
-sys_agent_list()                       # take the builtin whose harness == "claude-native"
+sys_agent_list()                       # take the builtin whose harness == "pi-native"
 sys_session_create(
   agent_id = <that agent_id>,
   title    = "⏳ 🌊 <repo>::wave/<date>-<slug>::<date>::wave_supervisor — <wave-summary>",
@@ -518,24 +533,39 @@ git -C "$WT" ls-remote origin 'wave/*'
 Dead-spawn signature: `status: "failed"`, or a history frozen at the user message
 with `runner_online: false`.
 
-1. Do NOT delete the worktree — `WAVE-BRIEF.md` is fine. Relaunch on the **same path**
-   with the same title and pointer message (path A: create **and** wake again). First
-   rule out the look-alikes: a missing wake, the Settings Error wake race (`failed`
-   with a `Settings Error` error item — re-wake, #2030), and the managed-policy stall
-   (`running`, frozen mid-`tool_use`, no `tool_result`) that no relaunch fixes.
-2. Re-probe the new `conversation_id` with the Step 5 history check.
-3. **Twice-dead ⇒ stop.** Report the failure rather than a third blind launch:
+1. Do NOT delete the worktree, and never archive the dead session before relaunching:
+   archiving can delete the bound worktree, `WAVE-BRIEF.md` included (#2571 — the
+   2026-10-23 supervisor lost both that way). Flip the dead session's title to ❌ and
+   leave it unarchived. Relaunch on the **same path** with the same title and pointer
+   message (path A: create **and** wake again). First rule out the look-alikes: a
+   missing wake, the Settings Error wake race (`failed` with a `Settings Error` error
+   item — re-wake, #2030), and the managed-policy stall (`running`, frozen
+   mid-`tool_use`, no `tool_result`) that no relaunch fixes.
+2. If the worktree is already gone (the dead session was archived), re-create it
+   before relaunching. The branch survives the removal:
+   ```bash
+   git -C <main-checkout> worktree prune
+   git -C <main-checkout> worktree add "$WT" wave-supervisor/<date>-<slug>
+   # re-write WAVE-BRIEF.md (Step 3; the text is in your transcript), then relaunch
+   ```
+3. Re-probe the new `conversation_id` with the Step 5 history check.
+4. **Twice-dead ⇒ stop.** Report the failure rather than a third blind launch:
    check `runner_online` on the parent session first — a dead runner kills every
    child regardless of the brief.
 
 ## Teardown
 
+Only after the wave PR merged and the supervisor's `WAVE-STATE.md` / `.wave/` are no
+longer needed: the close can delete `$WT` (#2571). The guard refuses while they are
+there, so `FORCE=1` here is the explicit "the wave records may go".
+
 ```bash
-make session-close SID=<conversation_id>   # path A sessions are out of your spawn tree
+make session-close SID=<conversation_id> FORCE=1   # path A sessions are out of your spawn tree
 ```
 
 ```bash
-git -C <main-checkout> worktree remove "$WT"
+[ -d "$WT" ] && git -C <main-checkout> worktree remove "$WT"
+git -C <main-checkout> worktree prune
 git -C <main-checkout> branch -D wave-supervisor/<date>-<slug>
 ```
 

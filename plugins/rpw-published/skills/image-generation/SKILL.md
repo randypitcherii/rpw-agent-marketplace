@@ -24,11 +24,11 @@ Create one descriptive folder for a batch and use stable numbered names such as
 ## Discover before calling
 
 Use a native MCP client when the harness exposes one. Otherwise load the `mcp-cli` skill,
-resolve its `rpw-mcp-cli`, and follow **servers → tools → call**:
+use `rpw mcp`, and follow **servers → tools → call**:
 
 ```bash
-"$MCP_CLI" servers
-"$MCP_CLI" tools rpw-published:gemini-image
+rpw mcp servers
+rpw mcp tools rpw-published:gemini-image
 ```
 
 Never guess the server name, tool name, model, or arguments. Read the live schema first.
@@ -62,7 +62,7 @@ calls sequentially.
 Preferred order:
 
 1. Use the harness's async/background tool-call facility, if it can run MCP calls.
-2. In a shell-only harness, start detached `rpw-mcp-cli` processes with unique JSON,
+2. In a shell-only harness, start detached `rpw mcp` processes with unique JSON,
    stdout, stderr, and PID files.
 3. Return control after launch. Poll completion in later short calls or on the next user
    turn; start the next batch only when capacity is available.
@@ -73,7 +73,7 @@ Shell pattern after schema discovery (illustrative; use the live arguments):
 RUN_DIR="$(mktemp -d /tmp/image-batch.XXXXXX)"
 for i in 01 02 03 04 05; do
   payload="$RUN_DIR/$i.request.json"       # write one complete prompt per file
-  nohup "$MCP_CLI" call rpw-published:gemini-image generate_image \
+  nohup rpw mcp call rpw-published:gemini-image generate_image \
     --json "$(cat "$payload")" \
     >"$RUN_DIR/$i.result.json" 2>"$RUN_DIR/$i.stderr" </dev/null &
   echo $! >"$RUN_DIR/$i.pid"

@@ -31,10 +31,54 @@ The server uses **Vertex AI authenticated with gcloud Application Default Creden
 If `GOOGLE_CLOUD_PROJECT` is unset or ADC is missing/expired, the server fails fast at startup with an actionable message, e.g.:
 `❌ gcloud Application Default Credentials not found — run: gcloud auth application-default login`
 
+## Backend: Vertex AI (default) or Databricks
+
+`GEMINI_IMAGE_BACKEND` picks where the call goes. Both backends authenticate with OAuth, and neither stores a key.
+
+| Backend | Auth | Set in `dev.env` |
+|---|---|---|
+| `vertex` (default) | gcloud ADC, as above | `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` |
+| `databricks` | A Databricks CLI profile's OAuth tokens. No Google credential. | `GEMINI_IMAGE_BACKEND=databricks`, `GEMINI_IMAGE_DATABRICKS_PROFILE=<profile>` |
+
+The `databricks` backend calls the Databricks-hosted Foundation Model API endpoints `databricks-gemini-3-1-flash-image` and `databricks-gemini-3-pro-image`. AI Gateway usage tracking applies to every call. These endpoints are global, so a workspace serves them only when cross-Geo processing is allowed (account console → workspace → Security and compliance). A workspace without them answers 404, which the tools report as `invalid_model` with that fix attached.
+
+On this backend the aliases resolve to endpoint names:
+
+| `model` value | Databricks endpoint |
+|---|---|
+| `gemini-2.5-flash-image` (the default), `nano-banana` | `databricks-gemini-3-1-flash-image`: **a substitution**, 2.5 Flash Image is not hosted on Databricks |
+| `gemini-3.1-flash-image`, `nano-banana-2` | `databricks-gemini-3-1-flash-image` |
+| `gemini-3-pro-image`, `nano-banana-pro` | `databricks-gemini-3-pro-image` |
+
+Any other `model` value is passed through as a raw endpoint name. The substitution is not silent: every success result's `Usage:` line names both `requested_model` and `resolved_model`. A caller that wants 3.1 Flash Image on Databricks should ask for `gemini-3.1-flash-image` by name.
+
+**Who picks the backend.** `dev.env` loads with `override=True`, so for most keys the file beats the process environment. `GEMINI_IMAGE_BACKEND` and `GEMINI_IMAGE_DATABRICKS_PROFILE` are the exception: a value already set in the environment that launches `run_mcp.py` wins over the file. That lets an app that spawns the server (darkroom does) choose the backend explicitly. With neither key set, the file decides as before.
+
 ## Tools
 
 - `generate_image` — Generate an image from a text prompt
 - `edit_image` — Edit an existing image with a text instruction
+
+`generate_image` parameters: `prompt`, `filename`, `aspect_ratio` (`1:1`, `3:4`,
+`4:3`, `9:16`, `16:9`), `model`, and `image_size` (`1K`, `2K` or `4K`; omit it for
+the model default). `image_size` is passed as `image_config.image_size` on both
+backends. Gemini 3 image models honor it; Gemini 2.5 Flash Image does not
+support it, so pair a size with `nano-banana-2` or `nano-banana-pro`. Any other
+value returns an `invalid_image_size` error before a call is made.
+
+A success result is one line, `Image saved to: <path>` (`Edited image saved to:`
+for edits). When the backend reports token usage, a second line follows:
+
+```
+Image saved to: /tmp/owl.png
+Usage: {"backend": "databricks", "completion_tokens": 1120, "image_output_tokens": 1120, "prompt_tokens": 11, "requested_model": "nano-banana-2", "resolved_model": "databricks-gemini-3-1-flash-image"}
+```
+
+The counters are the backend's own: the chat-completion `usage` fields on
+Databricks; `usage_metadata` on Vertex (`prompt_token_count`,
+`candidates_token_count`, `total_token_count`), with `image_output_tokens`
+summed from the image-modality candidate tokens. Price an image by
+`image_output_tokens`.
 
 Both tools parse the Gemini response structurally and **validate magic bytes
 before writing** any file. If the model returns no image — a safety block, a

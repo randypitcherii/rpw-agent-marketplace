@@ -200,9 +200,9 @@ Before deploying Raycast extension with Python:
 
 ## Real-World Impact
 
-**From production commits:**
-- 5987c3b: Fixed venv corruption affecting all users after Raycast asset copy
-- 47697f0: Fixed authentication overrides causing "wrong auth type" errors
-- 47697f0: Added multimodal support preventing validation failures with OpenAI clients
+**The production fixes these patterns came from:**
+- Venv corruption affecting all users after Raycast's asset copy
+- Authentication overrides causing "wrong auth type" errors
+- Missing multimodal support causing validation failures with OpenAI clients
 
 These patterns prevent production failures that only appear after Raycast's build/copy process.

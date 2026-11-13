@@ -1,9 +1,17 @@
 # The usage snapshot in the rollup — rules vs evidence
 
 `make usage-report` (`scripts/usage_report.py`) snapshots one row per `(week, kind, id)`
-into `rpw_prod.custom_logging.log_events` and prints a `## Usage` section for the rollup
+into the custom-logging events table (the script's `TABLE` constant) and prints a `## Usage` section for the rollup
 issue. The section has two halves and the sweep's verify discipline applies to only one of
 them.
+
+It runs in the Tuesday/Friday `📊 Twice-Weekly Agentic Improvements Report` automation
+(`#2004`), alongside its broader usage-improvement report and the staleness scanner. Both
+runs in one ISO week snapshot the same completed week; for a repeated week, the later row
+wins when history is read. The automation definition is
+`deployments/omnigent/automations/twice-weekly-agentic-improvements-report.yaml`. Deploy a
+change with `scripts/omnigent_automations.py apply --yes`, and `make automations-check`
+reports a server row that drifted from it. There is no separate staleness/usage schedule.
 
 ## Half one — the four decay rules (#1959). Proposals; verify them.
 
@@ -69,12 +77,11 @@ Two columns correct for that:
 
 A reader who does not know these will misread a zero as a result:
 
-1. **Friction accrues forward only.** The 179 `retro-finding` issues that predate the
-   `skill:` convention were deliberately not backfilled, so the column starts empty and
-   fills over weeks.
+1. **Friction accrues forward only** — the convention's no-backfill caveat, stated in
+   `wave-supervisor/retro-miner.md` § The `skill:` line.
 2. **Outcome coverage is bounded by transcript retention.** Claude Code keeps transcripts
    30 days (`cleanupPeriodDays`), so `outcome_sessions` is at or below the row's `sessions`
-   whenever `log_events` also covers the surface. It is coverage, not a session count.
+   whenever the events table also covers the surface. It is coverage, not a session count.
 
 ## The causal signal is not here
 

@@ -122,7 +122,11 @@ Measured 2026-09-28: one session refused at ~20:51:50Z, dismissed at
 the race, so a passing write probe does not rule it out.
 
 1. **Do NOT delete the worktree** — `WORKER-BRIEF.md` is intact, which is the whole
-   point of the brief-file pattern.
+   point of the brief-file pattern. And never archive the dead session first:
+   archiving can delete its bound worktree, brief included (#2571). Flip its title to
+   ❌ and leave it unarchived; if the worktree is already gone, re-create it on the
+   same branch (`git worktree prune && git worktree add "$WT" <branch>`) and re-stage
+   the brief before relaunching.
 2. **Re-post the wake event first.** If the runner has since come online, that alone
    revives it — with full context, unlike a relaunch.
 3. Still dead ⇒ relaunch: the same create payload (same title, same worktree) and wake

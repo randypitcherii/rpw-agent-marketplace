@@ -20,19 +20,17 @@ and an audit with no citable rule produces opinions instead of findings.
 
 ## Authoring a new nested file
 
-1. **Check it is owed one.** The standard's depth rule decides. A directory with
-   no gate and no invariants does not get a file.
+1. **Check it is owed one** — standard § "The tree" (depth rule).
 2. **Harvest, do not invent.** Mine the package's real traps before writing a
    word: its `Makefile` gate targets, `git log` messages that say "do not",
    test names and comments that pin a surprising property, and the issues cited
    in its code. An invariant nobody paid for in a bug is not an invariant.
-3. **Write the required sections in order**, per the standard. Each invariant is
-   one bullet: the rule, what breaks without it, the issue number, and — when
-   there is an obvious wrong "cleanup" — an explicit "do not change this back".
+3. **Write the required sections**, in order and shape, per standard
+   § "Required sections in a nested file".
 4. **Delete every line the root already says.** This is the pass that most new
    files skip.
 5. **Link the depth**, do not summarize it: README, `docs/` pages, ADRs by path.
-6. **Measure** with `wc -w` and cut to the budget.
+6. **Measure** with `wc -w` and cut to standard § "Budget".
 
 ## Auditing an existing file
 
@@ -40,7 +38,7 @@ Run the mechanical checks first — they are cheap and produce exact findings:
 
 ```bash
 git ls-files '*AGENTS.md' | xargs wc -w      # budget + the whole tree at once
-git ls-files '*AGENTS.md'                    # depth: no file deeper than one per package
+git ls-files '*AGENTS.md'                    # depth: § "The tree"
 
 # duplication smell: headings the child shares with the root
 comm -12 <(grep -o '^#\+ .*' projects/<pkg>/AGENTS.md | sed 's/^#* //' | sort -f) \
@@ -53,15 +51,14 @@ grep -nE 'build-claim|Refs #|squash|publish|marketplace|version bump|Landing the
 
 Then the judgment checks, each against a named rule in the standard:
 
-- **Missing required section** — no gate, no invariants, or no handoff line.
+- **Missing required section** — § "Required sections in a nested file".
 - **Duplication with the parent** — the child restates a repo-wide rule. Report
   the root line it duplicates.
 - **Contradiction** — the child states a repo-wide rule *differently* from the
   root. This outranks every other finding: an agent following the child is doing
   the wrong thing right now.
-- **Wrong home** — decision-with-rationale (an ADR), a repeatable procedure with
-  triggers (a skill), reference mechanics (`docs/process/`), install and
-  onboarding (the README — see the `project-readme` skill).
+- **Wrong home** — route per § "What must not appear, and where it goes
+  instead".
 - **Stale claim** — a named gate target, path, or file that no longer exists.
   Verify each one; do not assume.
 - **Over budget** — cite the count and the cap.
@@ -92,9 +89,8 @@ Two questions, in this order:
 
 1. **Is the change true today?** Every command, path, and gate it names must
    exist at that commit.
-2. **Did the change that invalidated the old line come with it?** A renamed gate
-   or moved package updates its AGENTS.md in the *same* PR. A PR that moves a
-   package and leaves its instructions stale is incomplete.
+2. **Did the change that invalidated the old line come with it?** § "Freshness"
+   — if not, the PR is incomplete.
 
 ## Composes with
 

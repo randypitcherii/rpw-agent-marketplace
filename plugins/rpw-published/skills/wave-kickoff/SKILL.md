@@ -109,9 +109,9 @@ worktree.
 
 ### Step 3b — Pre-dispatch write probe (MANDATORY — #1777)
 
-Prove this host can write **before** you launch anything. `make host-preflight`
+Prove this host can write **before** launching. `make host-preflight`
 asserts the runner's `claude-home-unattended` override; then launch a throwaway
-one-tool session that **Edits a scratch file** and require the matching
+one-tool session (same harness) that **Edits a scratch file** and require the matching
 `tool_result` back. On a managed-policy host every permission flag is a silent
 no-op and the prompt renders in an unattached pane (wave 2026-09-13). **A wedged probe means
 refuse to dispatch the fleet.** Mechanics:
@@ -121,13 +121,14 @@ refuse to dispatch the fleet.** Mechanics:
 ## Step 4 — Launch on path A: `POST /v1/sessions` bind mode + wake
 
 **Path A is the default, and the only path that can pre-grant permissions (#1760):**
-`host_id`, `workspace` (the Step 2 worktree), `git.existing_worktree: true`,
-`terminal_launch_args: ["--permission-mode","bypassPermissions"]` — `acceptEdits` gates
-edit tools only, wedging on the first `mcp__omnigent__sys_*` call (#1761). **Create, then
-wake with `make session-wake`** (create only seeds history; it re-posts on the Settings
+`host_id`, `workspace` (the Step 2 worktree), `git.existing_worktree: true`. **Pi is the
+default harness (#2491):** `agent_id` is the `pi-native` builtin, with **no**
+`terminal_launch_args` (Pi exits status 1 on `--permission-mode`); only explicit
+`claude-native` adds `bypassPermissions`. **Create, then
+wake with `make session-wake`** (create only seeds history; re-posts on the Settings
 Error race, #2030). Payload and probe: [reference.md](reference.md).
 
-Resolve the `claude-native` builtin's `agent_id`. Use [reference.md](reference.md)
+Use [reference.md](reference.md)
 to file a unique matching project before wake; path B cannot. Repeat the short
 summary in the pointer, name `WAVE-BRIEF.md`, and instruct: read out-of-tree files
 with Bash `cat`/`sed`, not `Read` (#1760).
@@ -139,7 +140,7 @@ no bound cwd, Step 0 mandatory, first out-of-scope call wedges it (#972).
 
 ```
 sys_session_create(
-  agent_id = <the claude-native builtin from sys_agent_list>,
+  agent_id = <the pi-native builtin from sys_agent_list>,
   title    = "⏳ 🌊 <repo>::wave/<date>-<slug>::<date>::wave_supervisor — <wave-summary>",
   message  = "<wave-summary>. cd <worktree> first — that is your worktree, not the
               directory you start in. Then read WAVE-BRIEF.md in that worktree's
@@ -160,7 +161,7 @@ with only the seed message — **re-post the event, do not relaunch.**
 **Dead-spawn signature:** `status: failed`, or frozen at the user message with
 `runner_online: false` — not the managed-policy stall (`running`, mid-`tool_use`, no
 `tool_result`), which no relaunch fixes (#1777), nor the #2030 wake race (`failed`
-on `Settings Error`: re-wake). Relaunch once on the same brief;
+on `Settings Error`: re-wake). Relaunch once, never archiving the dead one (#2571);
 **twice-dead ⇒ stop looping**, flip the title's ⏳ to ❌ (or ‼️ if alive but parked on a
 decision), keep 🌊, and report.
 
@@ -182,8 +183,7 @@ No terminal to focus: the session lives in the omnigent rail under its
   with (unbounded, or the seed list + skip-list).
 - **Liveness evidence** — the actual history probe (tool calls observed), not
   "created ok".
-- Cleanup: `sys_session_close(<conversation_id>)`, then
-  `git worktree remove <path>` and branch pruning.
+- Cleanup: reference.md Teardown (the close can delete the worktree).
 
 ## Hard boundaries
 

@@ -3,6 +3,7 @@
 #
 #   session-rename.sh <session-id> <new title...>
 #   session-rename.sh --list
+#   session-rename.sh self <new title...>    # the calling session (#2542)
 #
 # Renames through `PATCH /v1/sessions/{id}`, which is the *manual* rename route.
 # It is not the route `sys_session_rename` uses (that one is the automatic
@@ -13,11 +14,11 @@
 #                             schema), and refuses unless the current title is
 #                             still the deterministic first-message title
 #
-# The server also stores "/" as a space in any title (create and rename alike),
-# so a branch segment is normalized here before sending — otherwise every
-# structured title read back as a mismatch.
+# The title is sent verbatim, "/" included: the managed server stores it as
+# sent (re-measured 2026-10-05, #2145), and the read-back below exits 5 if a
+# server ever rewrites it.
 #
-# Measured 2026-09-16 against the managed server — see session-lifecycle.md.
+# Caps measured 2026-09-16 against the managed server — see session-lifecycle.md.
 set -euo pipefail
 
 # The cap the manual rename route enforces (422 `string_too_long` beyond it).
@@ -29,7 +30,8 @@ usage() {
 usage: session-rename.sh <session-id> <new title...>
        session-rename.sh --list
 
-  <session-id>   omnigent conversation id (see --list)
+  <session-id>   omnigent conversation id (see --list), or `self` for the
+                 calling session (resolved from the env Omnigent injects, #2542)
   <new title>    remaining args are joined with spaces; quoting is optional
 
 env:
@@ -63,7 +65,7 @@ for s in rows:
 fi
 
 [[ $# -ge 2 ]] || usage
-SID="$1"; shift
+SID="$(omni_resolve_sid "$1")"; shift
 TITLE="$*"
 
 # --- title checks -----------------------------------------------------------
@@ -72,7 +74,6 @@ TITLE="$*"
 TITLE="${TITLE%"${TITLE##*[![:space:]]}"}"
 [[ ${#TITLE} -ge $TITLE_MIN ]] || die "title must be at least $TITLE_MIN characters" 2
 
-
 if (( ${#TITLE} > TITLE_MAX )); then
   dropped="${TITLE:$TITLE_MAX}"
   TITLE="${TITLE:0:$TITLE_MAX}"
@@ -80,13 +81,6 @@ if (( ${#TITLE} > TITLE_MAX )); then
   printf '⚠️  title truncated to the %d-char rename cap (dropped %d chars: "%s")\n' \
     "$TITLE_MAX" "${#dropped}" "$dropped" >&2
   printf '    the kept prefix is the leading segments, so repo::branch survives\n' >&2
-fi
-# The server stores "/" as a space, so a branch segment never round-trips
-# verbatim. Substitute up front and say so, rather than reporting a mismatch
-# the caller cannot act on.
-if [[ "$TITLE" == */* ]]; then
-  TITLE="${TITLE//\// }"
-  printf 'note: "/" is stored as a space by the server; sending "%s"\n' "$TITLE" >&2
 fi
 
 # --- rename -----------------------------------------------------------------

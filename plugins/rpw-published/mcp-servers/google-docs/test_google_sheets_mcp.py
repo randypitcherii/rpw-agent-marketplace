@@ -311,5 +311,158 @@ class TestAllowListGate(_GatedWriteBase):
         mock_api.assert_not_called()
 
 
+_LAYOUT_BASE = (
+    "https://sheets.googleapis.com/v4/spreadsheets/sid"
+    "?fields=sheets%28properties%2Cdata%28rowMetadata%2CcolumnMetadata%29%29"
+)
+_LAYOUT_WITH_FORMAT = (
+    "https://sheets.googleapis.com/v4/spreadsheets/sid"
+    "?fields=sheets%28properties%2Cdata%28rowMetadata%2CcolumnMetadata"
+    "%2CrowData.values.effectiveFormat%29%29"
+)
+
+
+class TestGetLayout(unittest.TestCase):
+    """gsheets_get_layout shapes an ungated spreadsheets.get GET with an exact field mask (#1125)."""
+
+    def setUp(self):
+        self._orig_ro = os.environ.get("GDOCS_READ_ONLY")
+        os.environ["GDOCS_READ_ONLY"] = "true"  # reads must work in read-only mode
+
+    def tearDown(self):
+        if self._orig_ro is not None:
+            os.environ["GDOCS_READ_ONLY"] = self._orig_ro
+        else:
+            os.environ.pop("GDOCS_READ_ONLY", None)
+
+    def test_field_mask_is_exact(self):
+        self.assertEqual(
+            tools_sheets.LAYOUT_FIELDS,
+            "sheets(properties,data(rowMetadata,columnMetadata))",
+        )
+        self.assertEqual(
+            tools_sheets.LAYOUT_FIELDS_WITH_FORMAT,
+            "sheets(properties,data(rowMetadata,columnMetadata,rowData.values.effectiveFormat))",
+        )
+
+    def test_happy_path_whole_spreadsheet(self):
+        payload = {"sheets": [{
+            "properties": {"sheetId": 0, "title": "Sheet1"},
+            "data": [{"rowMetadata": [{"pixelSize": 21}],
+                      "columnMetadata": [{"pixelSize": 240}]}],
+        }]}
+        with patch("policy.api") as mock_api:
+            mock_api.return_value = payload
+            result = tools_sheets.gsheets_get_layout("sid")
+        self.assertEqual(json.loads(result), payload)
+        mock_api.assert_called_once_with("GET", _LAYOUT_BASE)
+
+    def test_range_bounds_the_request(self):
+        with patch("policy.api") as mock_api:
+            mock_api.return_value = {"sheets": []}
+            tools_sheets.gsheets_get_layout("sid", "Sheet1!A1:F40, 'Q3 Data'!A1:B2")
+        self.assertEqual(
+            mock_api.call_args[0][1],
+            _LAYOUT_BASE + "&ranges=Sheet1%21A1%3AF40&ranges=%27Q3%20Data%27%21A1%3AB2",
+        )
+
+    def test_cell_format_flag_adds_effective_format(self):
+        with patch("policy.api") as mock_api:
+            mock_api.return_value = {"sheets": []}
+            tools_sheets.gsheets_get_layout("sid", "Sheet1!A1:C3", include_cell_format=True)
+        self.assertEqual(
+            mock_api.call_args[0][1],
+            _LAYOUT_WITH_FORMAT + "&ranges=Sheet1%21A1%3AC3",
+        )
+
+    def test_cell_format_without_range_refused(self):
+        with patch("policy.api") as mock_api:
+            result = tools_sheets.gsheets_get_layout("sid", include_cell_format=True)
+        self.assertIn("requires a range", json.loads(result)["error"])
+        mock_api.assert_not_called()
+
+    def test_normalizes_url(self):
+        with patch("policy.api") as mock_api:
+            mock_api.return_value = {"sheets": []}
+            tools_sheets.gsheets_get_layout(
+                "https://docs.google.com/spreadsheets/d/SID99/edit#gid=0"
+            )
+        self.assertTrue(
+            mock_api.call_args[0][1].startswith(
+                "https://sheets.googleapis.com/v4/spreadsheets/SID99?fields="
+            )
+        )
+
+    def test_error_envelope_passed_through(self):
+        envelope = {"error": {"code": 404, "message": "Requested entity was not found."}}
+        with patch("policy.api") as mock_api:
+            mock_api.return_value = envelope
+            result = tools_sheets.gsheets_get_layout("sid")
+        self.assertEqual(json.loads(result), envelope)
+
+    def test_catches_exception(self):
+        with patch("policy.api") as mock_api:
+            mock_api.side_effect = RuntimeError("net down")
+            result = tools_sheets.gsheets_get_layout("sid")
+        self.assertIn("net down", json.loads(result)["error"])
+
+
+class TestExportPdf(unittest.TestCase):
+    """gsheets_export_pdf fetches a Drive PDF export and writes it to a temp file (#1125)."""
+
+    EXPORT_URL = (
+        "https://www.googleapis.com/drive/v3/files/sid/export?mimeType=application%2Fpdf"
+    )
+    PDF = b"%PDF-1.4\n%fake sheet render\n%%EOF\n"
+
+    def _cleanup(self, path):
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+
+    def test_writes_bytes_to_temp_file_and_returns_path(self):
+        with patch("auth._fetch_authed_bytes") as mock_fetch:
+            mock_fetch.return_value = (self.PDF, "application/pdf")
+            result = tools_sheets.gsheets_export_pdf("sid")
+        data = json.loads(result)
+        self._cleanup(data["path"])
+        mock_fetch.assert_called_once_with(self.EXPORT_URL)
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["path"].endswith(".pdf"))
+        self.assertEqual(data["bytes"], len(self.PDF))
+        self.assertEqual(data["mime_type"], "application/pdf")
+        with open(data["path"], "rb") as f:
+            self.assertEqual(f.read(), self.PDF)
+
+    def test_normalizes_url(self):
+        with patch("auth._fetch_authed_bytes") as mock_fetch:
+            mock_fetch.return_value = (self.PDF, "application/pdf")
+            result = tools_sheets.gsheets_export_pdf(
+                "https://docs.google.com/spreadsheets/d/SID99/edit#gid=0"
+            )
+        self._cleanup(json.loads(result)["path"])
+        self.assertEqual(
+            mock_fetch.call_args[0][0],
+            "https://www.googleapis.com/drive/v3/files/SID99/export?mimeType=application%2Fpdf",
+        )
+
+    def test_error_envelope_passed_through(self):
+        envelope = {"error": {"code": 403, "message": "This file is too large to be exported."}}
+        with patch("auth._fetch_authed_bytes") as mock_fetch:
+            mock_fetch.return_value = (json.dumps(envelope).encode(), "application/json")
+            result = tools_sheets.gsheets_export_pdf("sid")
+        self.assertEqual(json.loads(result), envelope)
+
+    def test_non_pdf_body_is_an_error(self):
+        with patch("auth._fetch_authed_bytes") as mock_fetch:
+            mock_fetch.return_value = (b"<html>login</html>", "text/html")
+            result = tools_sheets.gsheets_export_pdf("sid")
+        self.assertIn("did not return a PDF", json.loads(result)["error"])
+
+    def test_catches_exception(self):
+        with patch("auth._fetch_authed_bytes") as mock_fetch:
+            mock_fetch.side_effect = RuntimeError("curl failed")
+            result = tools_sheets.gsheets_export_pdf("sid")
+        self.assertIn("curl failed", json.loads(result)["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

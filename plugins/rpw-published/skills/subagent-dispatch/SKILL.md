@@ -47,7 +47,7 @@ Copy the whole prompt body from [`build-worker-prompt.md`](build-worker-prompt.m
 
 **Sonnet** (default) for implementation, file edits, tests; **Opus** for architecture, complex refactoring, multi-file coordination, Lead roles; **Haiku** for Minion tasks only.
 
-**Delegated mechanical work defaults to an OSS model on FMAPI** (GLM 5.2, Kimi K2.7-code, via `ucode`) — the rubric, the invocation, and the `PATH` precondition are in [`model-selection.md`](model-selection.md) (#915).
+**Delegated mechanical work defaults to an OSS model on FMAPI** — the rubric, the invocation, and the `PATH` precondition are in [`model-selection.md`](model-selection.md) (#915).
 
 ## 5. Dispatch Guardrails
 

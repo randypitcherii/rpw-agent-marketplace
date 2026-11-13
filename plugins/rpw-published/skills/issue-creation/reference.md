@@ -61,6 +61,8 @@ tells a worker where to stop.
 ## Acceptance criteria
 - [ ] Observable, checkable outcomes. Behavior, not activity.
 - [ ] "Test X passes" / "command Y prints Z", not "investigate Y".
+- [ ] Gate: the member gate (`make <member>-test`, or the focused pytest) passes,
+      and CI's `Repo gate (make verify)` is green on the PR.
 
 ## Dependencies
 Blocked by / blocks (`#N`), credentials or infrastructure required, work that
@@ -78,6 +80,8 @@ rather than pad it.
 How the reviewer confirms it works: the exact command, the gate to run, the
 observable end state. Name the actual check — not "verified manually".
 ```
+
+**Gate criteria name the member gate, never "`make verify` passes" as a worker action.** A wave worker runs only the member gate its fence touches; the root gate is supervisor-owned and serialized per merge (#1593), so a worker cannot meet "`make verify` passes" as written (#2071). Phrase the root-gate half as an observable PR state — CI's `Repo gate (make verify)` green on the PR.
 
 **Bugs** additionally carry a `## Reproduction` block right after Problem: exact command or steps, then observed vs expected.
 

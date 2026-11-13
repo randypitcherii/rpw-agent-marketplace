@@ -1,14 +1,15 @@
 {
   "name": "rpw-agent-marketplace",
   "owner": {
-    "name": "Randy Pitcher"
+    "name": "Randy Pitcher",
+    "email": "randy.pitcher@databricks.com"
   },
   "allowCrossMarketplaceDependenciesOn": [
     "claude-plugins-official"
   ],
   "metadata": {
     "description": "Public Claude Code plugins and skills",
-    "version": "2026.10.0811",
+    "version": "2026.11.1301",
     "pluginRoot": "./plugins"
   },
   "plugins": [
@@ -16,7 +17,7 @@
       "name": "rpw-published",
       "source": "./plugins/rpw-published",
       "description": "Publicly-shareable plugin \u2014 /build + dev tooling, MCP standards, env setup, productivity skills, and generic MCP servers",
-      "version": "2026.10.0811",
+      "version": "2026.11.1301",
       "license": "Apache-2.0",
       "author": {
         "name": "Randy Pitcher"

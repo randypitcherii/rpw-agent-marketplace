@@ -92,7 +92,8 @@ The retry counter is read by the wave supervisor's stall detector; a state-key
 change must keep that read working or waves lose stall detection silently.
 
 ## Verification
-`make verify` (includes the new regression test), plus one dispatched worker
+`make build-test` (includes the new regression test), CI's `Repo gate (make verify)`
+green on the PR, plus one dispatched worker
 against a deliberately memory-capped gate showing a single retry then a
 reported blocker.
 EOF

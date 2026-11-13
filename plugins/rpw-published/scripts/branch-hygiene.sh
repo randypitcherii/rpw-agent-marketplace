@@ -527,10 +527,9 @@ HYGIENE_PGREP_MATCH_ALL="."
 # passes a path as an argument cannot make the sweep refuse on itself.
 hygiene_procs_using() {
   local path="$1" out
-  out="$(${RPW_HYGIENE_PGREP:-pgrep} -f "$HYGIENE_PGREP_LIST_FLAG" "$HYGIENE_PGREP_MATCH_ALL" 2>/dev/null)"
-  if [ $? -ne 0 ] || [ -z "$out" ]; then
-    out="$(${RPW_HYGIENE_PS:-ps} -Ao pid=,args= 2>/dev/null)"
-    if [ $? -ne 0 ] || [ -z "$out" ]; then
+  if ! out="$(${RPW_HYGIENE_PGREP:-pgrep} -f "$HYGIENE_PGREP_LIST_FLAG" "$HYGIENE_PGREP_MATCH_ALL" 2>/dev/null)" \
+    || [ -z "$out" ]; then
+    if ! out="$(${RPW_HYGIENE_PS:-ps} -Ao pid=,args= 2>/dev/null)" || [ -z "$out" ]; then
       echo "PS-FAILED"
       return 0
     fi

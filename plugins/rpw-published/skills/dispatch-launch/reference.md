@@ -13,14 +13,14 @@ spec tells you nothing. The authority is `SessionCreateRequest`:
 |---|---|
 | `agent_id` | **required.** From `GET /v1/agents`. |
 | `initial_items` | list of `SessionEventInput`. **History-only when no runner is bound yet** — see [liveness-and-surfacing.md](liveness-and-surfacing.md). |
-| `title` | **200-char cap** — 201 chars is a 422 `string_too_long`, a refused create rather than a truncation (measured 2026-09-16). `/` is stored as a space. `PATCH /v1/sessions/{id}` caps at 200 too; the 60 belongs to the `sys_session_rename` tool schema, which is a different route ([session-lifecycle.md](session-lifecycle.md)). |
+| `title` | **200-char cap** — 201 chars is a 422 `string_too_long`, a refused create rather than a truncation (measured 2026-09-16). `/` is stored verbatim (re-measured 2026-10-05, #2145). `PATCH /v1/sessions/{id}` caps at 200 too; the 60 belongs to the `sys_session_rename` tool schema, which is a different route ([session-lifecycle.md](session-lifecycle.md)). |
 | `labels` | free-form `dict[str, str]`. |
 | `parent_session_id` / `sub_agent_name` | make the new session a child. Omit for a top-level dispatch. |
 | `host_type` | `"external"` (default) or `"managed"`. |
 | `host_id` | **required whenever `git` or `workspace` is set** — 422 otherwise. |
 | `workspace` | absolute path, must exist, must fall inside the agent's `os_env.cwd` boundary. Tilde/relative rejected. |
 | `git` | `SessionGitOptions`; requires `host_id`. |
-| `terminal_launch_args` | `list[str]` passed to the harness, e.g. `["--permission-mode","acceptEdits"]`. |
+| `terminal_launch_args` | `list[str]` passed to the harness, e.g. `["--permission-mode","acceptEdits"]` on `claude-native`. **Omit on Pi, the default harness** — it has no such flag (#2491). |
 | `model_override` / `reasoning_effort` | per-launch. **No Superset CLI equivalent existed.** |
 | `cost_control_mode_override`, `subagent_routing_override`, `harness_override`, `smart_routing_override` | advanced; leave unset for dispatch. |
 
@@ -122,7 +122,7 @@ Everything the retired `superset-launch` skill needed, and where it lives now.
 | `lsof +D` / prompt-grep liveness probes | the session's `items` history |
 | focus deep link + upstream pane-registration bug | the session rail; no pane, so no bug to work around |
 | `workspaces update --name` | `PATCH /v1/sessions/{id}` |
-| `workspaces delete --local` (removed the worktree) | `DELETE /v1/sessions/{id}` **plus** `git worktree remove` — separate lifetimes |
+| `workspaces delete --local` (removed the worktree) | `make session-close` — archiving can delete the bound worktree too (#2571); then `git worktree prune` |
 | `$SUPERSET_WORKSPACE_PATH` | `$OMNIGENT_RUNNER_WORKSPACE` |
 | Legacy process id | Runner authentication value (a credential — never echo it or treat it as a session id) |
 | `$SUPERSET_WORKSPACE_ID` | none — the session id must be passed in the brief |
@@ -150,7 +150,7 @@ Summary of what a dispatcher must live with:
 - **Permission elicitations can stall an unattended session (#972).** `acceptEdits`
   is not the mitigation: it covers edit tools only, and a supervisor launched with it
   stalled on its first `mcp__omnigent__sys_*` call. Unattended, supervisor-grade launches
-  take `terminal_launch_args: ["--permission-mode","bypassPermissions"]`; the resolve
+  on `claude-native` take `terminal_launch_args: ["--permission-mode","bypassPermissions"]` (Pi, the default, needs none, #2491); the resolve
   route for an already-wedged session is in
   [liveness-and-surfacing.md](liveness-and-surfacing.md).
 - **Completion signals can lie (#971).** Verify with history and artifacts (commits, PR

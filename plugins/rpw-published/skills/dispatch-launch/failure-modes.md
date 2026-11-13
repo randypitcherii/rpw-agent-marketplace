@@ -8,7 +8,8 @@ the day. The two that are *decisions* rather than diagnoses stay in SKILL.md.
 - **Created but never woken** (path A) — the single most likely way to get a
   permanently idle session. Both calls, always.
 - **Trusting `status`** — `idle` is what both a finished turn and a never-started
-  session report. Step 5 catches it; relaunch in place (the brief file survives), and
+  session report. Step 5 catches it; relaunch in place (the brief file survives — unless the
+  dead session was archived, which can delete its worktree, #2571), and
   **twice-dead ⇒ stop looping** and report.
 - **Long launch message** — spawn-dies; the brief-file pattern is not optional.
 - **Wrong worktree** — a path-B child ran in the parent's cwd because the brief lacked
@@ -41,3 +42,9 @@ the day. The two that are *decisions* rather than diagnoses stay in SKILL.md.
 - **Branch already exists** — pick a unique suffix; `worktree add -b` refuses a
   collision rather than silently reusing it.
 - **No online host** — dispatch nothing until `status: online` (see SKILL.md Step 1).
+- **Dispatched or resumed after the work shipped (#2342)** — the #2313 fixer found its
+  fix merged; #2302 found #2303 had fixed it. `make build-delivered-check ISSUE=<n>`
+  reads the issue and searches PRs: exit non-zero (`delivered` /
+  `merged-pr-open-issue`) means stop and hand back the evidence; an `open-pr` is not
+  delivery, resume that branch. `unknown` means GitHub could not be read: say so, do not
+  call it complete. It never closes or merges, and a deliberate follow-up is a human call.

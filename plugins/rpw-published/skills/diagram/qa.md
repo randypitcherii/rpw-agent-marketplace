@@ -12,7 +12,8 @@ Run after every render, with the same `RPW_SCALE` used by `render.sh`:
 ```
 
 The command writes `/tmp/diagram-<slug>.qa.json`. A pass exits 0; findings exit 1;
-tooling or input failures exit 2. The receipt records artifact paths, CSS and PNG
+tooling or input failures exit 2; exit 3 means Chrome's sandbox cannot start inside an
+enclosing sandbox — an environment limit, not a finding. The receipt records artifact paths, CSS and PNG
 dimensions, scale, every check's status, and actionable findings with a subject,
 evidence, and supported fixes.
 

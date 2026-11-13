@@ -16,8 +16,10 @@ curl -s "$BASE/v1/agents" | python3 -c 'import json,sys; [print(a["id"], a.get("
 
 - **`host_id`** must be an **online** host. `git` and `workspace` are both rejected
   without it (422).
-- **`agent_id`** is normally the builtin whose harness is `claude-native` (the UI
-  harness). **Never hardcode either id** — they change when a builtin's version bumps.
+- **`agent_id`** is by default the builtin whose harness is `pi-native` (`pi-native-ui`,
+  #2491): the Claude auto-mode classifier blocks unattended edits and managed-settings
+  dialogs wedge sessions, and Pi has neither. `claude-native` stays available when asked
+  for. **Never hardcode either id** — they change when a builtin's version bumps.
 - Inside an omnigent turn the same two lists come from `sys_agent_list`.
 
 Use an agent returned by the live registry. Existing agents launch by `agent_id`; only use `config_path` when the user supplied a local agent configuration to upload. Never assume a source checkout contains house-specific bundles or that an agent registered on one server exists on another.
@@ -145,7 +147,6 @@ cat > /tmp/omni-create.json <<JSON
   "workspace": "$WT",
   "title": "⏳ <repo>::<branch>::<YYYY-MM-DD>::<role> — #<issue> <work-summary>",
   "git": {"branch_name": "<branch>", "existing_worktree": true},
-  "terminal_launch_args": ["--permission-mode", "acceptEdits"],
   "model_override": "<optional>",
   "reasoning_effort": "<optional>"
 }
@@ -163,7 +164,7 @@ nothing.
 | `workspace` | **absolute** path, must exist, must fall inside the agent's `os_env.cwd` boundary. Tilde and relative paths are rejected. |
 | `git.existing_worktree: true` | **bind** to the step-2 worktree. `false` makes the server create one (`base_branch` names the fork point) — use bind mode whenever a brief file must be pre-staged. |
 | `host_id` | required whenever `git` or `workspace` is set (422 otherwise). |
-| `terminal_launch_args` | harness flags. `["--permission-mode","acceptEdits"]` is what keeps an unattended agent from permission-wedging (#972). |
+| `terminal_launch_args` | harness flags. **Omit on Pi (the default)** — `--permission-mode` is a Claude flag and Pi exits status 1 on it (#2491). On `claude-native`, `["--permission-mode","acceptEdits"]` keeps an unattended agent from permission-wedging (#972). |
 | `model_override` / `reasoning_effort` | per-launch, no config duplication — the Superset CLI had no equivalent. |
 | `title` | set it **here**, and keep it **under 200 characters** — creation *rejects* a longer one with `HTTP 422 string_too_long` (a refused dispatch, **not** a silent truncation; measured 2026-09-14 at 205 chars, fine at 164), while the rename path caps at 60. Use `⏳ <repo>::<branch>::<date>::<state> — <work-summary>`, with the issue title or first substantive request reduced to one short line. **The ⏳ prefix is not decoration** — it is the in-progress state, flipped to ✅/❌/🛑 at close-out ([session-lifecycle.md](session-lifecycle.md)). Both the prefix and the structured body are defined once, in the session-title convention (`docs/process/agent-session-titles.md`). |
 
@@ -171,7 +172,7 @@ nothing.
 
 ```
 sys_session_create(
-  agent_id = <the claude-native builtin from sys_agent_list>,
+  agent_id = <the pi-native builtin from sys_agent_list>,   # path B has no workspace: brief carries the Step 0 block
   title    = "⏳ <repo>::<branch>::<YYYY-MM-DD>::<role> — #<issue> <work-summary>",
   model    = <pinned model>,            # optional; omit for the agent default
   message  = "#<issue> <work-summary>. cd <worktree> first — that is your worktree,
@@ -221,3 +222,13 @@ Paths A and B take the model per launch (`model_override` / `model`) — pin it;
 dispatch work is multi-file. Path C inherits the harness's own default
 (`omni claude --use-native-config` uses your Claude Code config), so control the model
 there through that config, not through a flag.
+
+## Permissions, for an unattended launch
+
+on **Pi (the default) there is nothing to pass** (#2491).
+  On `claude-native`, supervisor-grade sessions take
+  `terminal_launch_args: ["--permission-mode","bypassPermissions"]` (path A) or
+  `--dangerously-skip-permissions` (path C). `acceptEdits` is not enough: it gates edit
+  tools only, so the session still wedges on its first `mcp__omnigent__sys_*` call with
+  nobody to answer (#1761). A managed-policy host makes every one of these flags a silent
+  no-op — Step 1's host check and the write probe are what prove otherwise (#1777).

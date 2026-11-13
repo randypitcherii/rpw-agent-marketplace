@@ -10,9 +10,42 @@ The reader opens this before coffee and skims it in under a minute. Everything b
 - **Separate fact from inference.** "Run failed at 01:17 with `URLError`" is a fact; "likely connectivity" is an inference and says so.
 - **No secrets or needless personal data.** Quote the decisive line of an error, not the log.
 
+## Source discovery and access evidence
+
+Missing native service tools are a routing question, not evidence that the account
+is disconnected. When native tools are absent, load `mcp-cli`, use `rpw mcp`
+(or its bundled launcher), and follow **servers → tools → call**. Inspect the live schema before
+calling; never guess tool names or use an upstream API as a workaround. If the
+bridge cannot be loaded or executed, record the exact failure and affected sources.
+
+Before drafting, attempt a bounded read-only content request for each relevant
+Calendar, Gmail, Slack, and task source; cap each call at **90 seconds** using the
+caller's subprocess/tool timeout. Gather the target-day agenda, recent message
+asks, and due tasks from working sources, not merely a connectivity probe. Read
+message details when search returns only IDs; follow pagination as needed for the
+claimed coverage or disclose the partial window. Do not mark messages read.
+An auth-only success proves authentication, not content-read access.
+
+Continue with working sources when another fails. An individual error such as
+`HTTP 403: Request had insufficient authentication scopes.` belongs to that source,
+not the whole report. Inspect error payloads even when an MCP envelope reports
+`isError: false`. Never reuse a prior report's limitations as current access evidence
+or substitute copyable scan prompts for gathering that is already possible.
+
+Include a compact **Source access evidence** table under confidence & limits:
+
+| Source | Tool / command | Checked at + timezone | Data window | Result / limit |
+|---|---|---|---|---|
+| Each relevant source | Actual read tool, discovery command, or unavailable bridge | Current observation timestamp | Exact window or n/a | Read succeeded (possibly empty/partial), failed with exact error, not installed after discovery, or not attempted with reason |
+
+Keep unavailable counts **not measured**, never zero; an empty successful read is
+different from an unattempted request. A discovery failure leaves access unknown,
+not disconnected. Propose any install, OAuth, or scope recovery; do not perform it
+in this read-only automation. No secrets or raw personal payloads in the evidence.
+
 ## Report structure (fixed order)
 
-1. **Identity header** — eyebrow `Morning Prep · <Weekday, Month D, YYYY>`, the project mark, an `<h1>` bottom line, and a one-sentence dek. `<title>` is `Morning Prep — <date>`.
+1. **Identity header** — eyebrow `Morning Prep · <Weekday, Month D, YYYY>`, the project mark, an `<h1>` bottom line, and a one-sentence dek. `<title>` is `YYYY-MM-DD · 🌞 Weekday Morning Prep`: ISO date first so tabs and browser history sort, then the exact automation name, so a tab says which schedule produced it.
 2. **Coverage strip** — sources, window/timezone, limits.
 3. **Today at a glance** — timed events and scheduled runs, each with status in words (scheduled / completed / failed / not checked).
 4. **Priority map** — at most five numbered steps, in the order to do them.

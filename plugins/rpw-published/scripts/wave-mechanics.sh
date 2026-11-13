@@ -34,8 +34,9 @@
 #   wave-mechanics.sh which <component>       print a resolved path
 #   wave-mechanics.sh claim <issue> [sup]     claim an issue (label + sentinel)
 #   wave-mechanics.sh honor-check <issue>     is it taken? 0 / 3 / 4
+#   wave-mechanics.sh delivered-check <issue> already delivered? 0 / 5 (#2342)
 #   wave-mechanics.sh audit                   unclaimed in-flight work alarm
-#   wave-mechanics.sh spawn|land|state-workers|record-status [args]
+#   wave-mechanics.sh spawn|worktree|land|state-workers|record-status|record-session|merge [args]
 #   wave-mechanics.sh lease <verb> [args]     wave_owner.py (the wave mutex)
 #
 # `wave-mechanics.sh help` prints the full verb list; `wm_usage` declares it.
@@ -323,8 +324,10 @@ usage: wave-mechanics.sh <verb> [args]
                                   cwd INSIDE the worker's worktree (#568)
   honor-check <issue> [supervisor]  is it taken? exit 0 dispatchable /
                                   3 claimed-by-other / 4 foreign supervisor
+  delivered-check <issue>         already closed / merged? exit 0 dispatchable /
+                                  5 delivered: stop with the evidence (#2342)
   audit                           alarm on in-flight commits with no claim
-  spawn|land|state-workers|record-status|gate|gate-check|brief-check|pr-check
+  spawn|worktree|land|state-workers|record-status|record-session|merge|gate|gate-check|brief-check|pr-check
                                   wave_worker.py verbs, passed through
   lease <verb> [args]             wave_owner.py — the wave mutex (claim|check|
                                   guard|heartbeat|release|state-append)
@@ -351,14 +354,14 @@ wm_main() {
         *) echo "wave-mechanics: which <claim|lease|worker|tools>" >&2; return 64 ;;
       esac
       ;;
-    claim|honor-check|audit|claim-audit)
+    claim|honor-check|delivered-check|audit|claim-audit)
       if [ ! -f "$WM_CLAIM_LIB" ]; then
         echo "⛔ wave-mechanics: no claim library at $WM_CLAIM_LIB (run 'preflight')." >&2
         return 3
       fi
       bash "$WM_CLAIM_LIB" "$verb" "$@"
       ;;
-    spawn|land|state-workers|record-status|gate|gate-check|brief-check|pr-check)
+    spawn|worktree|land|state-workers|record-status|record-session|merge|gate|gate-check|brief-check|pr-check)
       _wm_run_tool wave_worker.py "$verb" "$@"
       ;;
     lease)

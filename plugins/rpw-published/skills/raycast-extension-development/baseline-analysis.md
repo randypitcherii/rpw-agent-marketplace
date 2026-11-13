@@ -12,34 +12,34 @@
 ### CRITICAL MISSING ITEMS (Our Skill Must Address)
 
 **❌ Did NOT mention .gitignore for .venv directory**
-- This is THE KEY issue from commit 5987c3b
+- This is THE KEY issue from the venv-corruption fix
 - Raycast copies assets including .venv, causing corruption
 - Root cause: absolute path symlinks break when copied
 
 **❌ Did NOT mention lazy initialization for paths with useState**
-- From commit 5987c3b: `const [proxyPath] = useState(() => getProxyPath())`
+- From the venv-corruption fix: `const [proxyPath] = useState(() => getProxyPath())`
 - Race condition without this
 
 **❌ Did NOT mention `cd` to correct working directory in wrapper scripts**
-- From commit 5987c3b: `cd "${proxyPath}"` in wrapper script
+- From the venv-corruption fix: `cd "${proxyPath}"` in wrapper script
 
 **❌ Did NOT mention `uv sync` before `uv run`**
-- From commit 5987c3b: Must ensure dependencies installed fresh
+- From the venv-corruption fix: Must ensure dependencies installed fresh
 - Critical when .venv excluded from source
 
 **❌ Did NOT reference official Raycast documentation**
 - Skill MUST tell agent to check https://developers.raycast.com
 
 **❌ Did NOT mention multimodal message format support**
-- From commit 47697f0: Union[str, list] for content
+- From the auth-override fix: Union[str, list] for content
 - OpenAI API compatibility issue
 
 **❌ Did NOT mention removing profile parameter from Config**
-- From commit 47697f0: Profile settings override explicit auth_type
+- From the auth-override fix: Profile settings override explicit auth_type
 - Critical authentication bug
 
 **❌ Did NOT add validation error handler with helpful hints**
-- From commit 47697f0: Need summaries and actionable guidance
+- From the auth-override fix: Need summaries and actionable guidance
 
 ## Rationalizations Observed
 
