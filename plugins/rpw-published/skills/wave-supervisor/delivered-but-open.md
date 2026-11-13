@@ -43,6 +43,8 @@ gh pr list --state open   --search "$n" --json number,title,headRefName
 gh pr list --state merged --search "$n" --json number,title,mergedAt
 ```
 
+`make wave-spawn` asks Q2 and Q3 (both the wide search; `in:title` only ranks and labels hits) itself and refuses on a hit unless `--allow-delivery-hits` (#2540). The wide search only nominates. A nominee counts only with a `#<n>` token in its title or on a `Closes`/`Refs` reference, and is dropped only when it is this worker's own PR into the wave branch, a relaunch. A sibling worker's PR into the wave branch for the same issue is still a hit (#2653/#2672). `make wave-worktree` does not ask: a fold-in refs delivered issues on purpose.
+
 Question 3 is the one this file exists for. **A hit on it is a prompt to read —
 never an auto-skip, and never a verdict** — see the next section for why, and the
 section after that for how to decide.

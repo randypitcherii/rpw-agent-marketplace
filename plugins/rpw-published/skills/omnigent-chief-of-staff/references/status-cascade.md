@@ -24,7 +24,7 @@ Modelled on Agent Orchestrator's `determineStatus`: liveness → activity → th
 
 | # | Condition | Verdict | Priority | Meaning / next move |
 |---|---|---|---|---|
-| 1 | `status == failed` | **dead** | urgent | Relaunch in place. Do **not** delete the worktree — the brief and any uncommitted work are in it. |
+| 1 | `status == failed` | **dead** | urgent | Relaunch in place. Do **not** delete the worktree or archive the dead session (archive can delete it, #2571) — the brief and any uncommitted work are in it. |
 | 2 | `pending_elicitations` non-empty | **needs_input** | urgent | It is waiting on a human, not thinking (#972). Answer it or `omnigent attach`. |
 | 3 | `status == running` | **working** | info | Leave it alone. Note the idle time anyway; a "running" turn older than an hour deserves a history peek. |
 | 4 | `idle` and runner **offline** | **parked** | info | Finished, or died quietly. Hidden by default; confirm against the artifact (PR / commit) before closing. |
@@ -153,3 +153,21 @@ The 30-minute stale threshold is a starting guess. When the friction log shows
 `probe_lied` events clustering around a specific boundary ("classified stale, was
 still working on a 40-minute test run"), change the default in `fleet_report.py`
 and say so in the harvest issue. Do not hand-tune it from a single incident.
+
+## A semantic pass over what the cascade cannot read (#2383)
+
+The cascade reads fields and one regex, so two of its blind spots are structural. An
+idle session whose runner went offline is `parked` and hidden, even when its last message
+asks you to decide something. And a prose handoff that does not match a pattern reads as
+`done_candidate`. The `jev-decide` skill reads the **same `info.json`** with a System One
+model. The model answers observation questions, code maps the answers to one action per
+row, and the run takes about 2 s per session:
+
+```bash
+uv run --no-project python "<jev-decide-dir>/scripts/jev_decide.py" session --input "$T/info.json" --format text
+```
+
+Run it over the `parked`, `stale` and `done_candidate` rows. On a 10-session live sample
+the cascade parked 6 sessions, and 4 of those were waiting on the human. The semantic
+pass returned `answer_human` for all four. Where the two disagree, show both: the
+artifact decides, never either classifier.

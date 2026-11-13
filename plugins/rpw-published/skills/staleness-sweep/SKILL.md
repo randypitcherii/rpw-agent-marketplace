@@ -85,8 +85,8 @@ Report the tally: findings by lens, how many survived verification, how many wer
 
 ## Cadence
 
-Weekly is the starting point. The definition lives in `docs/process/staleness-sweep.md`; that runbook also records why the cadence hook is documented rather than wired, and what the automation-definition mechanism will need from it. Read it before changing when or where the sweep runs, and treat `automation-standards` as binding once it is scheduled: the recorded report is the run's health, not its exit code.
+Runs in `📊 Twice-Weekly Agentic Improvements Report` (Tue/Fri 04:00 America/Indianapolis, #2004), defined in `deployments/omnigent/automations/twice-weekly-agentic-improvements-report.yaml`; no separate sweep task. Edit that file, never the server row. The recorded report—not exit code—is run health (`automation-standards`).
 
 ## Why the proposals stay proposals
 
-A reviewer that also fixes inherits the builder's incentives — the reason `periodic-review` files issues instead of pushing commits. Guidance is worse: a wrong "fix" to a skill silently changes how every future agent behaves, and the next reader has no way to tell that a machine decided it. So the sweep buys accuracy with human approval on every edit, and the cost of that is one issue a week.
+A reviewer that also fixes inherits the builder's incentives — the reason `periodic-review` files issues instead of pushing commits. Guidance is worse: a wrong "fix" to a skill silently changes how every future agent behaves, and the next reader has no way to tell that a machine decided it. So the sweep buys accuracy with human approval on every edit, and the cost is one reviewable issue per run.

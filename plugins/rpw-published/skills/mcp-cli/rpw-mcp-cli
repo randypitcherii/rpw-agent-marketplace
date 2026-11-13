@@ -2,4 +2,23 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+# Fast path (#2623): inside the plugin, run straight in the `rpw` MCP entry's venv,
+# which has the MCP client, when that venv is synced to its pyproject.toml (the stamp
+# lib/backend_launch.py writes). It saves two uv and two Python starts per call. Any
+# miss falls through to the portable path, which syncs that venv when it must.
+RPW_DIR="$SCRIPT_DIR/../../mcp-servers/rpw"
+VENV_PY="$RPW_DIR/.venv/bin/python"
+STAMP="$RPW_DIR/.venv/.rpw-pyproject.sha256"
+if [ -x "$VENV_PY" ] && [ -f "$STAMP" ] && [ -f "$RPW_DIR/pyproject.toml" ]; then
+  if command -v shasum >/dev/null 2>&1; then
+    WANT="$(shasum -a 256 "$RPW_DIR/pyproject.toml" | cut -d' ' -f1)"
+  else
+    WANT="$(sha256sum "$RPW_DIR/pyproject.toml" | cut -d' ' -f1)"
+  fi
+  if [ "$(cat "$STAMP")" = "$WANT" ]; then
+    exec "$VENV_PY" "$SCRIPT_DIR/rpw_mcp_cli.py" "$@"
+  fi
+fi
+
 exec uv run --no-project python "$SCRIPT_DIR/rpw_mcp_cli.py" "$@"

@@ -15,12 +15,13 @@ X-Databricks-Omnigent-Slice-Key: <host_id with the "host_" prefix stripped>
 ```
 
 `host_id: host_9` → header value `9`. Without it, or with the prefix left on, the
-server answers **400 `wrong_replica`** — for *every* session on that host, not
+server answers **400 `wrong_replica`** (the public Omnigent error code
+`ErrorCode.WRONG_REPLICA`) — for *every* session on that host, not
 just one.
 
 > ⚠️ **It is deterministic, not transient. Retrying never helps.** That is the
 > trap: the response reads like a transient routing blip, so the reflex is a
-> retry loop, and the loop always fails. Root-caused 2026-09-17.
+> retry loop, and the loop always fails.
 
 `fleet_action.py` builds this value itself (`slice_key()` / `with_slice_key()`):
 it adds the header when the upstream builder omits it, and normalises a value
@@ -51,7 +52,7 @@ It GETs `/v1/sessions/{id}` (slice key included), reads
 
 | `last_task_error_code` | Verdict | Next move |
 |---|---|---|
-| `runner_disconnected` | **relaunch** | The runner process is gone; no nudge can reach it. Relaunch in place — same brief, same worktree. |
+| `runner_disconnected` | **relaunch** | The runner process is gone; no nudge can reach it. Relaunch in place — same brief, same worktree; do not archive the dead session first (#2571). |
 | any other code | **inspect** | Neither a clean finish nor a routing problem. Read the code first. |
 | absent | **re-send** | Nothing killed the last task. Idle or routing-blocked — nudge before relaunching. |
 

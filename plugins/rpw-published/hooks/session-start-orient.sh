@@ -66,6 +66,7 @@ echo ""
 ## Project Files
 
 echo "## Project Files"
+# shellcheck disable=SC2012  # human-readable listing for the session context, never parsed
 ls -la 2>/dev/null | head -20 || echo "not available"
 
 echo ""

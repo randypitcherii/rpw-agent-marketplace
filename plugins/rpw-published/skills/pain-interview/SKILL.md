@@ -113,9 +113,9 @@ issue and development workflow rather than hiding it inside the interview thread
 
 ## 7. Optional: run the rounds in a browser
 
-A wall of multi-select markdown in a terminal is hard to follow, and one catch-all
-correction field loses per-question context. When `projects/pain-interview-ui` is available,
-offer the browser instead. The terminal path above stays fully supported.
+Terminal multi-select walls are hard to follow, and one catch-all correction field
+loses per-question context. When `projects/pain-interview-ui` is available,
+offer the browser instead. The terminal path stays supported.
 
 ```bash
 uv run pain-interview-ui --fresh   # prints the URL to hand the user, and the session dir
@@ -123,14 +123,15 @@ uv run pain-interview-ui --fresh   # prints the URL to hand the user, and the se
 
 Then, per round:
 
-1. `POST <url>/api/round` with the round as JSON — `reflection` plus each question's `id`,
-   `kind` (`single_choice` | `multi_select`), `claim`, evidence cue, and `options`. The page
-   adds free text and "none of these / wrong framing" to every card itself.
+1. `POST <url>/api/round` with the round as JSON — a fresh `round_id` per round,
+   `reflection`, and each question's `id`, `kind` (`single_choice` | `multi_select`),
+   `claim`, evidence cue, and `options`. The page adds free text and "none of these /
+   wrong framing" to every card itself.
 2. `GET <url>/api/answers` once the user submits. Each entry carries `selected`,
    `none_of_these`, and `text`.
 3. `POST <url>/api/ledger` with `{"records": [...]}` after merging. The side panel repaints
    without a reload.
 
-Keep §4's saturation rule and §5's record fields exactly as they are — the surface renders
+Keep §4's saturation rule and §5's record fields as they are — the surface renders
 this skill, it does not change it. Routes, a worked round, and the port contract:
 `projects/pain-interview-ui/README.md`.

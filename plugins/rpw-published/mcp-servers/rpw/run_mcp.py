@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
-"""The `rpw` MCP server: one entry in this plugin's .mcp.json, fronting servers.json (#2215).
+"""The `rpw` MCP server: the one MCP entry across the rpw plugins (#2215, #2623).
 
-See lib/aggregator.py for the behavior: parallel startup, a failed backend is dropped
-rather than fatal, sessions stay open, tool names are not prefixed.
+A thin front over the mcporter keep-alive runtime. See front.py for the behavior and
+mcp_runtime.py for how the installed plugins become one mcporter config.
 """
 
 import sys
 from pathlib import Path
 
-# The shared lib is not a distributed package; servers put mcp-servers/ on the path.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 
-from lib import aggregator  # noqa: E402
+import front  # noqa: E402
 
 
 def main() -> None:
-    aggregator.run("rpw", Path(__file__).resolve().parent)
+    # The plugin root is this file's own location, two levels up, never
+    # CLAUDE_PLUGIN_ROOT: an inherited value could name a different plugin, and a uvx
+    # install has no such variable at all.
+    front.run(HERE.parent.parent)
 
 
 if __name__ == "__main__":

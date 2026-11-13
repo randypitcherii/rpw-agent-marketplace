@@ -1,6 +1,6 @@
 ---
 name: omnigent-chief-of-staff
-description: One surface to manage a fleet of Omnigent sessions — what is stuck, finished, or waiting on you, then bulk rename / wake / nudge / close / reconcile behind a confirm gate, plus a friction log that harvests its own headaches into retro-finding issues. Trigger on "what's stuck", "any updates on my sessions", "chief of staff", "rename these sessions", "close the dead ones". NOT for dispatching new work (dispatch-launch, wave-kickoff) or the host daemon (omnigent-host).
+description: One surface to manage a fleet of Omnigent sessions — what is stuck, finished, or waiting on you, then bulk rename / wake / nudge / close / reconcile behind a confirm gate, plus a friction log that harvests its own headaches into retro-finding issues. Trigger on "what's stuck", "any updates on my sessions", "chief of staff", "rename these sessions", "close the dead ones". NOT for dispatching new work (dispatch-launch, wave-kickoff) or the host daemon.
 ---
 
 # Omnigent chief of staff
@@ -12,7 +12,7 @@ so the next pass is smoother.
 
 Three things it composes onto and does not restate: `dispatch-launch` owns
 liveness rules and the single-session lifecycle; `wave-supervisor` owns a wave's
-cohort; `omnigent-host` (when installed in the user's environment) owns the host
+cohort; a host-daemon skill (if installed) owns the host
 daemon. This skill is the layer above — many sessions, many origins, one answer.
 
 ## The loop
@@ -160,7 +160,7 @@ argument describes you. Do not close or relaunch yourself from the bulk list.
 
 - `dispatch-launch` — one session's launch, wake, rename, close, teardown. This
   skill fans those out.
-- `wave-supervisor` / `wave-kickoff` — a wave's own monitor and retro miner.
-  The chief-of-staff sees the wave supervisor as one `working` row.
+- `wave-supervisor` / `wave-kickoff` — a wave's own monitor; one `working` row here.
 - `issue-creation` — the harvest issues take its shape and its labels.
 - `communication` — the report is for a human who will skim it.
+- `jev-decide` — semantic pass over the same `info.json` ([cascade](references/status-cascade.md)).

@@ -24,7 +24,7 @@ import os
 import re
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote, urlparse
 
 from databricks.sdk.service.serving import ExternalFunctionRequestHttpMethod
@@ -81,6 +81,13 @@ _LOCK_ACQUIRE_TIMEOUT_SECONDS = 30.0
 # hung proxy or upstream would block a server thread until the client gave up.
 # Generous enough for slow upstream searches, but bounded to surface a hang.
 _DEFAULT_HTTP_TIMEOUT_SECONDS = 150.0
+
+# Wall-clock budget for a whole request() call, retries included (#2623). Sits
+# below the 60s per-call ceiling of `mcporter serve` and Codex's default so the caller gets a
+# structured envelope instead of a bare transport timeout. Override with env
+# RPW_MCP_CALL_DEADLINE_SECONDS (a number, or "none"/"0" to disable).
+DEFAULT_CALL_DEADLINE_SECONDS = 40.0
+_DEADLINE_ENV = "RPW_MCP_CALL_DEADLINE_SECONDS"
 
 
 def require_proxy_env() -> tuple[str, str]:
@@ -266,7 +273,181 @@ def _uc_oauth_reauth_response(
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _resolve_deadline(deadline_seconds: float | None) -> float | None:
+    """Apply the env override when the caller left the default in place."""
+    if deadline_seconds != DEFAULT_CALL_DEADLINE_SECONDS:
+        return deadline_seconds
+    raw = (os.environ.get(_DEADLINE_ENV) or "").strip().lower()
+    if not raw:
+        return deadline_seconds
+    if raw in ("none", "off", "0"):
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return deadline_seconds
+    return value if value > 0 else None
+
+
+def _deadline_envelope(deadline: float, side_effecting: bool) -> str:
+    if side_effecting:
+        return json.dumps(
+            {
+                "ok": False,
+                "error": "side_effect_unknown",
+                "retryable": False,
+                "deadline_seconds": deadline,
+                "detail": (
+                    "The write may have succeeded; verify (e.g. read the "
+                    "channel) before retrying."
+                ),
+            }
+        )
+    return json.dumps(
+        {
+            "ok": False,
+            "error": "upstream_timeout",
+            "retryable": True,
+            "retry_after_seconds": 5,
+            "deadline_seconds": deadline,
+            "detail": (
+                f"The upstream did not answer within {deadline:g}s. Retry in "
+                "a few seconds; narrow the request if it keeps timing out."
+            ),
+        }
+    )
+
+
+class _CallState:
+    """Hand-off between the caller and its worker thread (#2623).
+
+    `sent` flips just before the upstream http_request; `expired` flips when the
+    caller's deadline fires. Both are decided under one lock, so a call that
+    times out before sending is abandoned (the worker will never send it) while
+    a call already sent is reported as unknown-outcome.
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.sent = False
+        self.expired = False
+
+    def try_send(self) -> bool:
+        with self.lock:
+            if self.expired:
+                return False
+            self.sent = True
+            return True
+
+    def expire(self) -> bool:
+        """Mark the deadline fired; return whether the request was already sent."""
+        with self.lock:
+            self.expired = True
+            return self.sent
+
+
+# Reauth envelopes that arrive after the caller's deadline already fired are
+# remembered per connection so the next call answers at once instead of
+# spending another deadline on the same dead credentials.
+_REAUTH_CACHE_SECONDS = 300.0
+_reauth_cache: dict[str, tuple[float, str]] = {}
+_reauth_lock = threading.Lock()
+
+
+def reset_reauth_cache() -> None:
+    """Test hook."""
+    with _reauth_lock:
+        _reauth_cache.clear()
+
+
+def _is_reauth(raw: str) -> bool:
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(data, dict) and data.get("error") == "uc_oauth_reauthentication_required"
+
+
+def _cached_reauth(conn: Any) -> str | None:
+    with _reauth_lock:
+        hit = _reauth_cache.get(conn)
+        if hit is None:
+            return None
+        if time.monotonic() - hit[0] > _REAUTH_CACHE_SECONDS:
+            del _reauth_cache[conn]
+            return None
+        return hit[1]
+
+
+def _notify(on_complete: Callable[[str], None] | None, raw: str) -> None:
+    if on_complete is None:
+        return
+    try:
+        on_complete(raw)
+    except Exception:  # noqa: BLE001 - a callback must never break the call
+        pass
+
+
 def request(
+    *,
+    deadline_seconds: float | None = DEFAULT_CALL_DEADLINE_SECONDS,
+    side_effecting: bool = False,
+    on_complete: Callable[[str], None] | None = None,
+    **kwargs: Any,
+) -> str:
+    """Run `_request_impl` under a wall-clock deadline (see module contract).
+
+    The work runs in a daemon thread; on expiry this returns immediately and
+    the thread finishes in the background. `deadline_seconds=None` runs inline
+    (bounded only by the HTTP ceiling).
+
+    `on_complete(raw)` receives the FINAL raw result from the worker thread
+    whether or not the deadline already fired (exceptions are swallowed), so a
+    caller that got a timeout envelope can still learn what really happened.
+    If the deadline fires before the request was sent, the worker never sends
+    it, so the timeout is a clean, retryable `upstream_timeout` even for a
+    side-effecting call.
+    """
+    deadline = _resolve_deadline(deadline_seconds)
+    conn = kwargs.get("conn")
+    cached = _cached_reauth(conn)
+    if cached is not None:
+        _notify(on_complete, cached)
+        return cached
+    state = _CallState()
+    if deadline is None:
+        raw = _request_impl(_state=state, **kwargs)
+        _notify(on_complete, raw)
+        return raw
+
+    box: dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            raw = _request_impl(_state=state, **kwargs)
+            box["result"] = raw
+            if state.expired and _is_reauth(raw):
+                with _reauth_lock:
+                    _reauth_cache[conn] = (time.monotonic(), raw)
+            _notify(on_complete, raw)
+        except BaseException as exc:  # noqa: BLE001 - re-raised in caller
+            box["error"] = exc
+
+    worker = threading.Thread(target=_run, name="uc-proxy-request", daemon=True)
+    worker.start()
+    worker.join(deadline)
+    if worker.is_alive():
+        sent = state.expire()
+        env = _deadline_envelope(deadline, side_effecting and sent)
+        if not sent:
+            _notify(on_complete, env)
+        return env
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
+
+
+def _request_impl(
     *,
     workspace_client: Any,
     conn: str,
@@ -276,6 +457,7 @@ def request(
     query_params: dict[str, str] | None = None,
     headers: dict[str, str] | None = None,
     treat_empty_as_error: bool = False,
+    _state: _CallState | None = None,
 ) -> str:
     """Proxy an HTTP call through a UC connection; return JSON string per contract.
 
@@ -304,6 +486,8 @@ def request(
             finally:
                 _call_lock.release()
 
+            if _state is not None and not _state.try_send():
+                return _deadline_envelope(0.0, False)
             resp = workspace_client.serving_endpoints.http_request(
                 conn=conn,
                 method=method,
@@ -375,6 +559,9 @@ def request_via_env(
     query_params: dict[str, str] | None = None,
     headers: dict[str, str] | None = None,
     treat_empty_as_error: bool = False,
+    deadline_seconds: float | None = DEFAULT_CALL_DEADLINE_SECONDS,
+    side_effecting: bool = False,
+    on_complete: Callable[[str], None] | None = None,
 ) -> str:
     """Env-driven proxy call: read UC_PROXY_* env, get cached client, call request().
 
@@ -409,4 +596,7 @@ def request_via_env(
         query_params=query_params,
         headers=headers,
         treat_empty_as_error=treat_empty_as_error,
+        deadline_seconds=deadline_seconds,
+        side_effecting=side_effecting,
+        on_complete=on_complete,
     )

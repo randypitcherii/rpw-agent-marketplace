@@ -45,11 +45,11 @@ Follow the repo `dataviz` skill and `libs/ui/DESIGN.md`. Select the simplest for
 
 ## Self-contained HTML and identity
 
-Use `../assets/template.html` as a standalone starting point; `../assets/example-report.html` demonstrates a comparison visualization with an equivalent table, clearly marked fictional. Keep styles inline and require no build/network connection. Use semantic landmarks, logical headings, table captions/headers, responsive layouts, visible focus styles, and readable contrast. Title and visible header must unmistakably say **Agentic Improvements**, not look like a generic dashboard.
+Use `../assets/template.html` as a standalone starting point; `../assets/example-report.html` demonstrates a comparison visualization with an equivalent table, clearly marked fictional. Keep styles inline and require no build/network connection. Use semantic landmarks, logical headings, table captions/headers, responsive layouts, visible focus styles, and readable contrast. The visible header must unmistakably say **Agentic Improvements**, not look like a generic dashboard. The `<title>` is `YYYY-MM-DD · 📊 Twice-Weekly Agentic Improvements Report`: ISO report date first so tabs sort, then the exact automation name.
 
 For standalone HTML, inline token values are permitted only with a comment naming `libs/ui/DESIGN.md` as their source. Prefer design-system tokens; don't invent new design parameters.
 
-Favicon assets must belong to this project and follow `favicon-standards` source → registry → build conventions. Never point at another project's icon. A registered web surface uses standard favicon tags and registry-matched theme color. A local report without server-owned icon paths should use a correct inline, project-specific data URI favicon or omit the favicon until a project source asset exists. Never invent an external `favicon.svg` path for raster art.
+Favicon assets must belong to this project and follow `favicon-standards` source → registry → build conventions. Never point at another project's icon. A registered web surface uses standard favicon tags and registry-matched theme color. This report has no server-owned icon paths, so it embeds its own `agentic-improvements` icon (`assets/icon/favicon-32.png`, registered `inline`) as a data URI; re-embed with `scripts/inline_favicon.py`. Never invent an external `favicon.svg` path for raster art.
 
 ## Cycle continuity
 

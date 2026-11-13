@@ -2,7 +2,7 @@
 
 A [Claude Code](https://docs.claude.com/en/docs/claude-code) plugin marketplace by
 Randy Pitcher. It ships one plugin — **`rpw-published`** — bundling a full build
-workflow, 65 skills, 8 subagents, 13 commands, and 8 MCP servers.
+workflow, 71 skills, 8 subagents, 13 commands, and 8 MCP servers.
 
 These are the tools I use every day, published as-is. They lean toward Python/`uv`,
 Google Workspace, and Databricks, because that is what I work in. Take the parts that
@@ -47,17 +47,22 @@ It is the recommended first command.
   **`/project-feedback`**, **`/plugin-feedback`**, **`/required-stack`**,
   **`/activity-context`** — session and repo housekeeping.
 
-**Skills** (65) — loaded automatically when a task matches. Highlights:
+**Skills** (71) — loaded automatically when a task matches. Highlights:
 
 - *Engineering practice* — `tdd`, `systematic-debugging`, `code-review-and-pr`,
-  `subagent-dispatch`, `wave-supervisor` (multi-issue parallel orchestration).
+  `subagent-dispatch`, `wave-supervisor` (multi-issue parallel orchestration),
+  `codebase-reflection` (whole-repo "what should we delete or simplify" audit),
+  `upstream-contribution` (issue → upstream-fresh branch → PR on a repo you forked).
 - *Standards* — `mcp-standards`, `python-with-uv`, `versioning-standards`,
-  `env-preferences`.
+  `makefile-standards`, `env-preferences`.
 - *Databricks* — `databricks-jobs`, `databricks-apps`, `databricks-model-serving`,
-  `databricks-uc-connections`.
+  `databricks-uc-connections`, `jev-decide` (calibrated yes/no, choice and score decisions
+  from a System One model), `rbac-role-design` (Unity Catalog access as object access
+  roles vs business function roles, with a dry-run-first role-map script).
 - *Productivity* — `image-generation` (responsive parallel image batches), `diagram`
   (styled HTML-to-PNG diagrams), `dataviz` (charts, plots, dashboards), `document-files`
-  (PDF/docx/xlsx/pptx), `doc-styling`, `slack-formatting`, `human-todo`,
+  (PDF/docx/xlsx/pptx), `doc-styling`, `slack-formatting`, `slack-browser` (read a
+  Slack workspace with no bot token through the signed-in agent browser), `human-todo`,
   `changelog-release-notes`, `dispatch-launch`, `mobile-sso` (CLI login from a phone),
   `omnigent-chief-of-staff` (triage and bulk-manage a fleet of agent sessions).
 
@@ -97,6 +102,7 @@ requirements — install only what you plan to use:
 | To use | You need |
 |---|---|
 | The Python servers (Google ×5, Gemini, Jira) | [`uv`](https://docs.astral.sh/uv/) |
+| Any MCP server (the `rpw` entry runs them through [mcporter](https://github.com/openclaw/mcporter)) | [Node.js](https://nodejs.org/) 24 or newer |
 | `chrome-devtools` | Node.js (for `npx`) |
 | The Google servers and `gemini-image` | A Google Cloud project with the relevant APIs enabled, then `gcloud auth application-default login` |
 | `jira` | Your Jira host and an API token |

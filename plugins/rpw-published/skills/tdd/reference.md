@@ -32,7 +32,7 @@ The standard loop is RED-first. The exception: you're hardening an *existing, pa
 - During the loop: run the single test (`pytest file::test`) or the one file. Fastest feedback.
 - Before declaring a unit done: run the suite for the package you touched (`make runtime-test` for `libs/rpw_runtime`, `make eval-test` for `libs/rpw_evals`, `make check` for repo invariants).
 - Before delivery / PR: run the full project gate (`make verify`).
-- Live evals (`make eval`) cost real compute and hit Databricks — run only when the change affects eval behavior and you need live evidence. (Compute itself is free for this user; the cost is wall-clock and network, not dollars.)
+- Live evals (the `make eval-*` targets) cost real compute and hit Databricks — run only when the change affects eval behavior and you need live evidence. (Compute itself is free for this user; the cost is wall-clock and network, not dollars.)
 
 ## Anti-patterns
 

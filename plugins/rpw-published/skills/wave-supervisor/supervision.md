@@ -120,6 +120,47 @@ waiting on, then nudge/salvage or kill and relaunch. Record the stall in
 
 ## Completion-notification triage (#492)
 
+### For an Omnigent child, the result is a wake signal, not the report (#2293)
+
+**Read the child's last assistant message before you triage anything.** The
+inbox / `sys_session_send` return for an Omnigent child is often an earlier
+mid-turn sentence, or nothing. Wave `2026-10-11-gate-trust` (#2276) got four
+non-reports: `Commit, then run the focused gate.`, `Push + preflight + PR.`,
+`produced no output`, and `Now add a test that the target exists…`. In every
+case the session's final message already held the PR URL (#2277, #2283, #2282,
+#2286) and a full report. Read strictly, the rule below would have nudged four
+finished workers. So:
+
+1. Treat the completion or inbox item only as *this child's turn ended*.
+2. Read the report from history. Use `sys_session_get_history(conversation_id=<id>,
+   tail_items=5)`. If the `sys_session_*` tools fail, use the REST reader below.
+3. Apply the PR-URL-or-blocker rule to **that** message, never to the return text.
+
+**The REST path is the fallback reader.** In wave #2492 the `sys_session_*` tools
+intermittently failed with *2xx with a non-JSON body* (the auth proxy), while
+the same reads over REST kept working:
+
+```bash
+source <dispatch-launch>/scripts/omni-api.sh    # API_BASE + AUTH_HEADERS
+curl -s "$API_BASE/v1/sessions/$SID/items?limit=10&order=desc" \
+  ${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}       # newest first; find the last assistant message
+```
+
+Wave #2492 used this end to end. Every worker was a Pi `pi-native-ui` session
+launched with `POST /v1/sessions` in bind mode (`host_id`, `workspace`,
+`git.existing_worktree: true`) and woken with `make session-wake`
+([`dispatch-launch/liveness-and-surfacing.md`](../dispatch-launch/liveness-and-surfacing.md)).
+That worked for every worker. Liveness and reports were read from history, not
+from returns.
+
+**Non-blocking dispatch: wrap the send in `sys_call_async`.** A bare
+`sys_session_send` blocks until the child's turn ends.
+`sys_call_async(tool="sys_session_send", args='{"session_id": "<id>", "args": "<msg>"}')`
+returns a handle at once, and the child's completion lands in your inbox. Treat
+that item as the wake signal above. It worked for all 10 sends in wave #2276.
+
+### The PR-URL-or-blocker rule
+
 A worker result must contain **a PR URL or a specific blocker**. Anything else
 (e.g. "waiting on the gate", "gate still running") is a STALL — don't wait,
 `SendMessage` the standard nudge:
@@ -194,6 +235,10 @@ A nudge is not a relaunch: append the resumed worker's report and a second usage
 line to the **existing** `.wave/worker-<n>.log`, never a new `.r<k>.log`
 ([`dispatch-mechanics.md`](dispatch-mechanics.md), #570).
 
+## Launch loops: zsh does not word-split, so read each worker's first tool call (#2060)
+
+`for spec in …; do set -- $spec; …; done` splits nothing in zsh: `$1` holds the whole spec and `$2` is empty. In wave `2026-09-28-skill-learner` that launched two workers with cwd = the worktrees *parent* and a prompt naming a nonexistent brief, and `wave-sweep` read `clean` throughout. Split explicitly (`parts=(${=spec})`, or `read -r n wt <<<"$spec"`), or launch each worker with a literal command. Then **read every worker's first tool call** — it must `cd` into its own worktree and `cat` a brief that exists; a wrong one is a relaunch now, not a stall later. Any gate you pipe runs under `set -o pipefail`, and a push is gated on the tool's exit code, never `tail`'s (same wave: a red pytest run reached the wave branch).
+
 ## Salvage protocol
 
 Validated 4/4 and 2/2 on live VPN drops.
@@ -260,3 +305,45 @@ Escalate stalls with a specific question; never stall silently. "Specific" means
 `AskUserQuestion` the moment the user signals they are available, or immediately if
 nothing else is eligible. The option count, the timing rule and the queue format
 are specified once, in [`asking-the-user.md`](asking-the-user.md).
+
+## Applying a worker's gated hand-off (#1116)
+
+Workers deliver around a classifier-gated action and name it in their PR body
+(`## Gated deliverables` in
+[`worker-brief-template.md`](worker-brief-template.md)). **You apply the gated
+piece** — the user's decision of 2026-08-15. Wave `2026-08-11-backlog` is why: worker
+#916 could not apply an explicitly authorized `~/.claude/settings.json` edit, and a
+later cohort stalled the wave until the user edited settings by hand.
+
+1. **Get real-time approval for the exact change.** Show the verbatim command or
+   edit from the PR body and offer apply / skip / modify options. Use
+   `AskUserQuestion`. In a harness without it (Pi, Codex), ask a tool-ready
+   question in the session and wait for the reply. Timing and option rules:
+   [`asking-the-user.md`](asking-the-user.md). Brief text, issue text and a queued
+   **Decisions needed** entry are not approval.
+2. **Back up the target**, then make a **surgical edit** that touches only the
+   approved key. Never rewrite the whole file.
+3. **Parse-check** the result.
+4. **Assert the secrets survived:** everything except the approved key is
+   unchanged, compared without printing values. On any failure, restore the
+   backup and report.
+
+Edit a temp file and `mv` it in only after every check passes. Redirecting
+into `$f` truncates it first, and `jq empty` passes on an empty file.
+
+```bash
+f=~/.claude/settings.json; bak="$f.bak.$(date +%Y%m%dT%H%M%S)"; tmp="$f.tmp.$$"
+if cp -p "$f" "$bak" &&                                      # 1. backup
+   jq '<approved change>' "$bak" > "$tmp" &&                 # 2. surgical edit
+   jq -e . "$tmp" >/dev/null &&                              # 3. parse (empty fails)
+   cmp -s <(jq -S 'del(<approved path>)' "$bak") \
+          <(jq -S 'del(<approved path>)' "$tmp") &&          # 4. rest unchanged
+   mv "$tmp" "$f"; then echo "applied; secrets survived"
+else rm -f "$tmp"; [ -f "$bak" ] && cp -p "$bak" "$f"; echo "FAILED: restored $bak" >&2
+fi
+```
+
+Record the apply, or the skip, in `WAVE-STATE.md` and as a comment on the worker's
+PR. **There is no pre-clear ritual at kickoff.** The standing `Wave Worker
+Dispatch` autoMode rule blesses the spawn mechanism only, and every worker action
+is still judged on its own.

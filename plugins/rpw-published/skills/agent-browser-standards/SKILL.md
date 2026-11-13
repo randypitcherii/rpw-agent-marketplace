@@ -24,11 +24,13 @@ Two distinct things must both be separate, and they fail differently:
 - **The binary** (process and app identity). Sharing it is the operational failure — same
   process name, same app icon, same OS-level handlers, so `pkill`, Raycast, and "open this
   link" can't tell the two apart. It is also how automation writes OS state the human sees
-  (#1058: e2e Chrome launches creating Web App shortcuts).
+ .
 
 Use **Chrome for Testing** or Playwright's bundled Chromium. Both carry their own name
 (`Google Chrome for Testing`), can never become the system default browser, and are killable
 on purpose: `pkill -f "Chrome for Testing"`.
+
+**Exception:** device-trust IdPs refuse automation binaries; see [references/device-trust.md](references/device-trust.md).
 
 ## Pick a configuration
 
@@ -95,7 +97,7 @@ isolated one stays the default and this one is chosen deliberately:
 
 Install, bootstrap the login, and wire auto-approval per
 [setup.md](setup.md). Flags move between releases — confirm with
-`npx @playwright/mcp@latest --help` before trusting a flag list, including this one.
+`npx @playwright/mcp@latest --help` before trusting a flag list.
 
 ### Per harness
 
@@ -130,7 +132,7 @@ an image, which an agent must still describe in words before it can act.
 because every step round-trips a snapshot through the context window. The same work as a
 **Playwright CLI script** costs ~27K — the loop runs inside the script and only the result
 comes back. Rule of thumb: exploration and one-off validation over MCP, repeated or long
-deterministic flows as a script (which is then also reviewable, committable, and rerunnable).
+deterministic flows as a script.
 Keep screenshots to `--output-dir` on disk and read them only when a question is genuinely
 visual.
 

@@ -13,7 +13,7 @@ This published-plugin copy mirrors the Omnigent project skill in `projects/omnig
 
 1. Follow the contract's read-only evidence and sample-scope guardrails.
 2. Create the report from [`assets/template.html`](assets/template.html); use [`assets/example-report.html`](assets/example-report.html) as a visual example (all its data is fictional).
-3. Keep the header unmistakably branded **Agentic Improvements**, with the reporting window and bottom line.
+3. Keep the header unmistakably branded **Agentic Improvements**, with the reporting window and bottom line. Tab `<title>` is `YYYY-MM-DD · 📊 Twice-Weekly Agentic Improvements Report` (report date, then schedule name); keep the inline project favicon.
 4. Include standard approval-ready fields: priority, recommendation, evidence, impact, confidence, effort, a verification/next step, and approval/status.
 5. Compare cycles only when definitions and data are comparable. Include labels, denominators, windows, source, caveats, and an equivalent table for every visualization.
 6. Render and inspect at narrow width and zoom. Use `dataviz`, `web-design` / `libs/ui/DESIGN.md`, and `favicon-standards` for their respective concerns.
@@ -23,4 +23,6 @@ This published-plugin copy mirrors the Omnigent project skill in `projects/omnig
 
 - `assets/template.html` — blank self-contained HTML report template.
 - `assets/example-report.html` — fictional cycle comparison and equivalent table.
+- `assets/icon/` — project icon set built by `scripts/build_icons.py` from `assets/project-icons/agentic-improvements.png`.
+- `scripts/inline_favicon.py` — re-embeds `assets/icon/favicon-32.png` as the data URI (`--check` verifies).
 - `references/reporting-contract.md` — detailed evidence, recommendation, comparison, visualization, and continuity rules.

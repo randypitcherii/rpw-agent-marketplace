@@ -11,12 +11,22 @@ file is written: a safety block, a text-only refusal, or an empty/non-image
 response returns a structured, actionable error instead of persisting garbage
 bytes to disk (issue #95).
 
-Authentication is OAuth-derived: gcloud Application Default Credentials
-(`gcloud auth application-default login`) provide the identity, and the SDK
-mints + auto-refreshes short-lived Vertex AI access tokens at call time. No
-static API key is used.
+Two backends, selected by ``GEMINI_IMAGE_BACKEND`` (#2563), both OAuth-derived
+with no static API key:
 
-Images are saved to disk and file paths are returned.
+- ``vertex`` (default): Vertex AI via gcloud Application Default Credentials
+  (`gcloud auth application-default login`); the SDK mints + auto-refreshes
+  short-lived access tokens at call time.
+- ``databricks``: the Databricks-hosted Foundation Model API endpoints
+  (``databricks-gemini-3-1-flash-image`` / ``databricks-gemini-3-pro-image``),
+  authenticated with a Databricks CLI profile's OAuth tokens. No Google
+  credential is involved; Databricks AI Gateway usage tracking applies.
+
+Images are saved to disk and file paths are returned. A successful result is
+the ``Image saved to: <path>`` line, followed — when the backend reported token
+usage — by one ``Usage: {json}`` line carrying the backend, the requested and
+resolved model, and the usage counters (``image_output_tokens`` among them), so
+a caller can show cost per image (#2611).
 """
 
 import base64
@@ -33,7 +43,7 @@ from google.genai import types
 # Allow imports from the parent mcp-servers directory (shared lib/).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib.stale_auth import StaleAuthGuard
+from lib.stale_auth import StaleAuthGuard, looks_like_stale_auth
 
 DEFAULT_MODEL = "gemini-2.5-flash-image"
 DEFAULT_VERTEX_LOCATION = "global"
@@ -69,6 +79,146 @@ _STALE_AUTH = StaleAuthGuard(
 )
 
 
+# --- Backend selection (#2563) ------------------------------------------------
+
+BACKEND_ENV = "GEMINI_IMAGE_BACKEND"
+DATABRICKS_PROFILE_ENV = "GEMINI_IMAGE_DATABRICKS_PROFILE"
+_BACKENDS = ("vertex", "databricks")
+
+
+def _backend() -> str:
+    """The configured backend. An unknown value is an error, never a silent fallback."""
+    value = (os.getenv(BACKEND_ENV) or "vertex").strip().lower()
+    if value not in _BACKENDS:
+        raise ValueError(f"{BACKEND_ENV}={value!r} is not one of {', '.join(_BACKENDS)}")
+    return value
+
+
+def _databricks_profile() -> str:
+    """The Databricks CLI profile whose OAuth tokens authenticate the endpoint calls."""
+    return (
+        os.getenv(DATABRICKS_PROFILE_ENV)
+        or os.getenv("DATABRICKS_CONFIG_PROFILE")
+        or "DEFAULT"
+    ).strip()
+
+
+# Friendly aliases and raw Vertex ids -> Databricks pay-per-token endpoint names.
+# Gemini 2.5 Flash Image is not hosted on Databricks, so the default model and the
+# `nano-banana` alias resolve to its successor, 3.1 Flash Image — the default call
+# must keep working when only the backend changes. Anything else passes through as
+# a raw endpoint name (a custom or external-model endpoint).
+DATABRICKS_ENDPOINTS = {
+    "nano-banana": "databricks-gemini-3-1-flash-image",
+    "gemini-2.5-flash-image": "databricks-gemini-3-1-flash-image",
+    "nano-banana-2": "databricks-gemini-3-1-flash-image",
+    "gemini-3.1-flash-image": "databricks-gemini-3-1-flash-image",
+    "nano-banana-pro": "databricks-gemini-3-pro-image",
+    "gemini-3-pro-image": "databricks-gemini-3-pro-image",
+}
+
+
+def _resolve_databricks_endpoint(model: str) -> str:
+    return DATABRICKS_ENDPOINTS.get(model, model)
+
+
+# --- Output size (#2611) -------------------------------------------------------
+
+#: Values Gemini's ``image_config.image_size`` accepts. Gemini 3 image models honor
+#: it (Pro returned a 2K render in the #2563 probes); Gemini 2.5 Flash Image does not.
+IMAGE_SIZES = ("1K", "2K", "4K")
+
+
+def _validate_image_size(image_size: str | None) -> str | None:
+    """Normalize ``image_size``; ``None`` / empty means "model default, send nothing".
+
+    An unknown value raises rather than being dropped: a silently ignored "4K" is a
+    1K image the caller believes is 4K.
+    """
+    if image_size is None or not str(image_size).strip():
+        return None
+    value = str(image_size).strip().upper()
+    if value not in IMAGE_SIZES:
+        raise ValueError(f"image_size={image_size!r} is not one of {', '.join(IMAGE_SIZES)}")
+    return value
+
+
+def _invalid_image_size(image_size) -> str:
+    return json.dumps(
+        {
+            "error": "invalid_image_size",
+            "message": f"image_size={image_size!r} is not one of {', '.join(IMAGE_SIZES)}.",
+            "next_action": "Pass 1K, 2K or 4K, or omit image_size for the model default.",
+        },
+        indent=2,
+    )
+
+
+# --- Usage reporting (#2611) ---------------------------------------------------
+
+def _int_or_none(value):
+    # bool is an int subclass; a MagicMock attribute is neither — both are rejected.
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _databricks_usage(response) -> dict:
+    """The chat completion's ``usage`` block, numeric fields only.
+
+    ``image_output_tokens`` is reported top-level on the Databricks endpoints
+    (probed live on #2563); it is also looked up under ``completion_tokens_details``
+    in case a later API revision nests it the OpenAI way.
+    """
+    raw = response.get("usage") if isinstance(response, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    usage = {k: v for k, v in raw.items() if _int_or_none(v) is not None}
+    details = raw.get("completion_tokens_details")
+    if isinstance(details, dict):
+        nested = {k: v for k, v in details.items() if _int_or_none(v) is not None}
+        if nested:
+            usage["completion_tokens_details"] = nested
+        if "image_output_tokens" not in usage and _int_or_none(details.get("image_tokens")) is not None:
+            usage["image_output_tokens"] = details["image_tokens"]
+    return usage
+
+
+def _vertex_usage(response) -> dict:
+    """Vertex ``usage_metadata`` as plain ints, with image tokens summed by modality."""
+    meta = getattr(response, "usage_metadata", None)
+    if meta is None:
+        return {}
+    usage = {}
+    for field in ("prompt_token_count", "candidates_token_count", "thoughts_token_count", "total_token_count"):
+        value = _int_or_none(getattr(meta, field, None))
+        if value is not None:
+            usage[field] = value
+    details = getattr(meta, "candidates_tokens_details", None)
+    if isinstance(details, (list, tuple)):
+        image_tokens = [
+            _int_or_none(getattr(d, "token_count", None))
+            for d in details
+            if "IMAGE" in str(getattr(d, "modality", "")).upper()
+        ]
+        image_tokens = [t for t in image_tokens if t is not None]
+        if image_tokens:
+            usage["image_output_tokens"] = sum(image_tokens)
+    return usage
+
+
+def _success(prefix: str, path: str, *, backend: str, requested: str, resolved: str, usage: dict) -> str:
+    """``<prefix>: <path>`` plus, when usage was reported, one ``Usage: {json}`` line.
+
+    The first line is unchanged so existing callers that parse ``Image saved to:``
+    keep working; the model fields make an alias resolution (e.g. the default model
+    landing on 3.1 Flash Image on Databricks) visible instead of silent.
+    """
+    line = f"{prefix}: {path}"
+    if not usage:
+        return line
+    payload = {"backend": backend, "requested_model": requested, "resolved_model": resolved, **usage}
+    return f"{line}\nUsage: {json.dumps(payload, sort_keys=True)}"
+
+
 def _get_client() -> genai.Client:
     """Build a Vertex AI Gemini client authenticated with gcloud ADC.
 
@@ -83,6 +233,129 @@ def _get_client() -> genai.Client:
         )
     location = os.getenv("GOOGLE_CLOUD_LOCATION", DEFAULT_VERTEX_LOCATION)
     return genai.Client(vertexai=True, project=project, location=location)
+
+
+_STALE_AUTH_DATABRICKS = StaleAuthGuard(
+    provider="databricks",
+    remediation="Re-authenticate the Databricks profile: databricks auth login --profile <profile>",
+)
+
+
+def _stale_guard() -> StaleAuthGuard:
+    """The stale-auth latch for the active backend, remediation naming the real profile."""
+    if _backend() == "databricks":
+        _STALE_AUTH_DATABRICKS.remediation = (
+            "Re-authenticate the Databricks profile: "
+            f"databricks auth login --profile {_databricks_profile()}"
+        )
+        return _STALE_AUTH_DATABRICKS
+    return _STALE_AUTH
+
+
+def _databricks_invoke(endpoint: str, body: dict) -> dict:
+    """POST one chat request to a Databricks serving endpoint; the only network seam.
+
+    The SDK's ``api_client`` resolves the profile's OAuth token from the CLI cache
+    and refreshes it, so no credential is read or stored here. Patched in tests.
+    """
+    from databricks.sdk import WorkspaceClient
+
+    client = WorkspaceClient(profile=_databricks_profile())
+    return client.api_client.do("POST", f"/serving-endpoints/{endpoint}/invocations", body=body)
+
+
+def _data_url_bytes(url: str) -> bytes | None:
+    """Decode a ``data:<mime>;base64,<payload>`` URL; ``None`` for anything else."""
+    if not isinstance(url, str) or not url.startswith("data:") or "," not in url:
+        return None
+    try:
+        return base64.b64decode(url.split(",", 1)[1])
+    except (ValueError, TypeError):
+        return None
+
+
+def _extract_databricks_image(response: dict, endpoint: str):
+    """Locate the image in a Databricks chat completion.
+
+    ``content`` is a list of parts; images arrive as ``image_url`` data URLs.
+    **The last valid image wins**: Gemini 3 Pro Image streams a draft image, more
+    reasoning, then the final render (probed live, #2563). A blocked prompt comes
+    back as an empty text part with ``finish_reason: "error"``. Returns
+    ``(bytes, None)`` or ``(None, error_json)``, mirroring
+    :func:`_extract_image_bytes`.
+    """
+    choices = (response.get("choices") or []) if isinstance(response, dict) else []
+    choice = choices[0] if choices else {}
+    content = (choice.get("message") or {}).get("content")
+    parts = content if isinstance(content, list) else [{"type": "text", "text": content or ""}]
+    found, saw_image, texts = None, False, []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "image_url":
+            saw_image = True
+            data = _data_url_bytes((part.get("image_url") or {}).get("url"))
+            if data and _looks_like_image(data):
+                found = data
+        elif part.get("type") == "text" and part.get("text"):
+            texts.append(part["text"])
+    if found is not None:
+        return found, None
+    envelope = {
+        "error": "no_image_in_response",
+        "message": (
+            "Gemini returned no valid image"
+            + (" — the image part was not a valid PNG/JPEG" if saw_image else " — the response carried no image part")
+            + " (safety block, text-only refusal, or empty response). No file was written."
+        ),
+        "model": endpoint,
+        "backend": "databricks",
+        "next_action": "Rephrase the prompt/instruction, or try a different model (see README 'Model selection').",
+    }
+    if texts:
+        envelope["model_text"] = "\n".join(texts).strip()
+    if choice.get("finish_reason") is not None:
+        envelope["finish_reason"] = str(choice["finish_reason"])
+    return None, json.dumps(envelope, indent=2)
+
+
+def _databricks_model_error(requested: str, endpoint: str, detail: str) -> str:
+    return json.dumps(
+        {
+            "error": "invalid_model",
+            "message": f"Databricks has no serving endpoint '{endpoint}' on profile '{_databricks_profile()}'.",
+            "requested_model": requested,
+            "resolved_model": endpoint,
+            "known_aliases": DATABRICKS_ENDPOINTS,
+            "next_action": (
+                "Use a known alias, or check the workspace serves the endpoint "
+                "(`databricks serving-endpoints get <name>`). The Gemini image endpoints "
+                "are global and need cross-Geo processing enabled on the workspace "
+                "(account console > workspace > Security and compliance)."
+            ),
+            "detail": detail,
+        },
+        indent=2,
+    )
+
+
+def _databricks_generate(content, model: str, image_config: dict | None):
+    """Run one request on the Databricks backend; ``(bytes, usage, None)`` or ``(None, {}, error)``."""
+    endpoint = _resolve_databricks_endpoint(model)
+    body: dict = {"messages": [{"role": "user", "content": content}]}
+    if image_config:
+        # Top-level unknown fields are forwarded into Gemini's generation_config;
+        # `extra_body` is not (400). Probed live on #2563.
+        body["image_config"] = image_config
+    try:
+        response = _databricks_invoke(endpoint, body)
+    except Exception as e:
+        # Stale auth propagates to the tool's guard; a missing endpoint gets its own envelope.
+        if not looks_like_stale_auth(str(e)) and _looks_like_model_error(str(e), endpoint):
+            return None, {}, _databricks_model_error(model, endpoint, str(e))
+        raise
+    image, err = _extract_databricks_image(response, endpoint)
+    return image, _databricks_usage(response), err
 
 
 def _save_image(image_data: bytes, filename: str) -> str:
@@ -283,6 +556,7 @@ def generate_image(
     filename: str = "generated.png",
     aspect_ratio: str = "1:1",
     model: str = DEFAULT_MODEL,
+    image_size: str | None = None,
 ) -> str:
     """Generate an image from a text prompt using Gemini native image generation.
 
@@ -292,21 +566,48 @@ def generate_image(
         aspect_ratio: Aspect ratio — 1:1, 3:4, 4:3, 9:16, 16:9. Default: 1:1
         model: Gemini model or alias to use. Aliases: nano-banana,
             nano-banana-2, nano-banana-pro. Default: gemini-2.5-flash-image
+        image_size: Output resolution — 1K, 2K or 4K. Omit for the model default.
+            Honored by Gemini 3 image models (nano-banana-2, nano-banana-pro);
+            Gemini 2.5 Flash Image does not support it.
+
+    On success returns ``Image saved to: <path>``, followed by a ``Usage: {json}``
+    line (token counts incl. ``image_output_tokens``) when the backend reports usage.
     """
     # Short-circuit if a prior call already found the credential stale — return the
     # actionable re-auth envelope without re-hitting Vertex AI (issue #195).
-    stale = _STALE_AUTH.short_circuit()
+    guard = _stale_guard()
+    stale = guard.short_circuit()
     if stale is not None:
         return stale.as_message()
     resolved_model = _resolve_model(model)
     try:
+        size = _validate_image_size(image_size)
+    except ValueError:
+        return _invalid_image_size(image_size)
+    try:
+        if _backend() == "databricks":
+            image_config = {"aspect_ratio": aspect_ratio}
+            if size:
+                image_config["image_size"] = size
+            image_bytes, usage, err = _databricks_generate(prompt, model, image_config)
+            if err is not None:
+                return err
+            return _success(
+                "Image saved to", _save_image(image_bytes, filename), backend="databricks",
+                requested=model, resolved=_resolve_databricks_endpoint(model), usage=usage,
+            )
         client = _get_client()
+        image_config = (
+            types.ImageConfig(aspect_ratio=aspect_ratio, image_size=size)
+            if size
+            else types.ImageConfig(aspect_ratio=aspect_ratio)
+        )
         response = client.models.generate_content(
             model=resolved_model,
             contents=[prompt],
             config=types.GenerateContentConfig(
                 response_modalities=["IMAGE"],
-                image_config=types.ImageConfig(aspect_ratio=aspect_ratio),
+                image_config=image_config,
             ),
         )
 
@@ -316,11 +617,14 @@ def generate_image(
         if err is not None:
             return err
         path = _save_image(image_bytes, filename)
-        return f"Image saved to: {path}"
+        return _success(
+            "Image saved to", path, backend="vertex",
+            requested=model, resolved=resolved_model, usage=_vertex_usage(response),
+        )
     except Exception as e:
         # Normalize stale/expired-credential failures into the shared actionable
         # envelope and latch the guard so subsequent calls short-circuit.
-        stale = _STALE_AUTH.classify(e)
+        stale = guard.classify(e)
         if stale is not None:
             return stale.as_message()
         # Surface unknown/unavailable-model rejections with the alias list (#350).
@@ -346,7 +650,8 @@ def edit_image(
             nano-banana-2, nano-banana-pro. Default: gemini-2.5-flash-image
     """
     # Short-circuit a known-stale credential before doing any work (issue #195).
-    stale = _STALE_AUTH.short_circuit()
+    guard = _stale_guard()
+    stale = guard.short_circuit()
     if stale is not None:
         return stale.as_message()
     resolved_model = _resolve_model(model)
@@ -362,6 +667,19 @@ def edit_image(
         elif source_path.suffix.lower() == ".webp":
             mime_type = "image/webp"
 
+        if _backend() == "databricks":
+            data_url = f"data:{mime_type};base64," + base64.b64encode(image_bytes).decode()
+            content = [
+                {"type": "text", "text": instruction},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ]
+            edited_bytes, usage, err = _databricks_generate(content, model, None)
+            if err is not None:
+                return err
+            return _success(
+                "Edited image saved to", _save_image(edited_bytes, filename), backend="databricks",
+                requested=model, resolved=_resolve_databricks_endpoint(model), usage=usage,
+            )
         client = _get_client()
         response = client.models.generate_content(
             model=resolved_model,
@@ -380,9 +698,12 @@ def edit_image(
         if err is not None:
             return err
         path = _save_image(edited_bytes, filename)
-        return f"Edited image saved to: {path}"
+        return _success(
+            "Edited image saved to", path, backend="vertex",
+            requested=model, resolved=resolved_model, usage=_vertex_usage(response),
+        )
     except Exception as e:
-        stale = _STALE_AUTH.classify(e)
+        stale = guard.classify(e)
         if stale is not None:
             return stale.as_message()
         # Surface unknown/unavailable-model rejections with the alias list (#350).

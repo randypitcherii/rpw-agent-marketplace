@@ -1,7 +1,7 @@
 [project]
 name = "rpw-mcp-aggregator"
-version = "2026.10.0810"
-description = "Single MCP entry for the rpw-published plugin: proxies the backends in servers.json (#2215)"
+version = "2026.11.1101"
+description = "The one rpw MCP entry: a thin unprefixing front over the mcporter keep-alive runtime (#2215, #2623)"
 requires-python = ">=3.10"
 dependencies = [
     "fastmcp>=4.0.0",

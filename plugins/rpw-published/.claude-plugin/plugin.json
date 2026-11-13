@@ -1,9 +1,10 @@
 {
   "name": "rpw-published",
-  "version": "2026.10.0811",
+  "version": "2026.11.1302",
   "description": "Publicly-shareable plugin \u2014 /build + dev tooling, /doctor setup, MCP standards, env setup, productivity skills (image-generation, diagram, dataviz, document-files, human-todo, dispatch-launch), and generic MCP servers (Google, Gemini, Jira, exa)",
   "author": {
-    "name": "Randy Pitcher"
+    "name": "Randy Pitcher",
+    "email": "randy.pitcher@databricks.com"
   },
   "license": "Apache-2.0",
   "skills": "./skills/",

@@ -27,6 +27,7 @@ if [ -z "$FILE_PATH" ]; then
   exit 0
 fi
 
+# shellcheck source=../scripts/build-state.sh
 source "$LIB" 2>/dev/null || exit 0
 
 # Only enforce during an active build.

@@ -13,71 +13,27 @@ Use when the target of the feedback is **this marketplace** — a plugin, skill,
 
 **Skip when** the feedback is about the *user's own* project (file it there with `gh` directly), or the fix is fast enough to just do inline. For analyzing plugin/project *health* (not filing feedback), use `/plugin-feedback` or `/project-feedback` instead.
 
-**Composition:** the `issue-creation` skill is the default issue-authoring path for any repo; this skill is its marketplace-scoped specialization, so within that scope the classification, labels, and body shape below win.
+**Composition:** the `issue-creation` skill is the default issue-authoring path for any repo; this skill is its marketplace-scoped specialization. Everything generic — duplicate search, the real-label-set rule, HEREDOC filing, title convention, reporting the URL — comes from `issue-creation` and is not restated here. Within this scope, the three deltas below win.
 
-## Pipeline
+## Deltas over `issue-creation`
 
-### 1. Classify
-Pick exactly one type from what the user describes:
-- **bug** — something is broken or behaves wrong (`type: bug`).
-- **feature** — new capability or enhancement (`type: feature`).
-- **docs** — missing/wrong/unclear documentation (`documentation`).
-- **friction** — the tool works but the workflow is painful, slow, or surprising. Friction is usually filed as a `type: bug` (behavior to fix) or `type: feature` (ergonomics to add) — decide which the fix is, and say "friction:" in the summary.
+### 1. Resolve the target repo + component
+- Repo = this marketplace repo: `gh repo view --json nameWithOwner -q .nameWithOwner` (owned, so ownership detection is moot).
+- Name the **component** — the plugin + the specific skill/command/MCP server (e.g. `rpw-published / google-drive MCP`). It leads the title (`<component>: <summary>`) and the body, so triage is instant.
 
-If it's ambiguous, ask ONE clarifying question, then proceed.
-
-### 2. Resolve the target repo + component
-- Default repo = this marketplace repo: `gh repo view --json nameWithOwner -q .nameWithOwner`.
-- Identify the **component** the feedback is about — the plugin + the specific skill/command/MCP server (e.g. `rpw-published / google-drive MCP`, `rpw-published / build command`). Name it in the body so triage is instant.
-
-### 3. Pick labels
-Apply, from the real repo label set (see [reference.md](reference.md) for the full table + colors):
+### 2. House label taxonomy
+Full table in [reference.md](reference.md):
 - **exactly one type**: `type: bug` | `type: feature` | `type: epic` | `type: task`, or `documentation` for pure docs.
-- **exactly one priority**: `priority: P0`…`priority: P4` (P0 critical → P4 backlog). Default `priority: P2` unless the user signals urgency.
-- **`quick win`** when the fix is small, well-scoped, and high-value (low effort, clear payoff) — e.g. a one-file bug with an obvious fix.
-Do NOT invent labels; use only what `gh label list` returns.
+- **exactly one priority**: `priority: P0`…`priority: P4`; default `priority: P2` unless the user signals urgency.
+- **`quick win`** when the fix is small, well-scoped, and high-value.
+- **Friction** has no label: file it as `type: bug` or `type: feature` (whichever the fix is) and lead the summary with `friction:`.
 
-### 4. Draft the body (house shape)
-Every issue uses the same sections so they read consistently (drop sections that don't apply, but keep the order):
+If the type is ambiguous, ask ONE clarifying question, then proceed.
 
-- **Summary** — one paragraph: what's wrong / wanted.
-- **Reproduction** (bugs) — exact steps / command + observed vs expected.
-- **Impact** — who/what is blocked, how often, the workaround if any.
-- **Likely cause** (if known) — file:line or subsystem.
-- **Suggested fix / desired shape** — concrete, minimal.
-- **Scope** — how contained (single file? one MCP server? note `quick win`).
-- **Related** — `#N` issues/PRs.
+### 3. Body shape
+Sections in this order (drop what doesn't apply): **Summary** · **Reproduction** (bugs: steps + observed vs expected) · **Impact** · **Likely cause** · **Suggested fix / desired shape** · **Scope** · **Related**. Per-type skeletons are in [reference.md](reference.md); `.github/ISSUE_TEMPLATE/` carries the same shape for manual filers.
 
-Per-type ready-made skeletons are in [reference.md](reference.md); the `.github/ISSUE_TEMPLATE/` files carry the same shape for manual filers.
-
-### 5. File it
-Use a HEREDOC so the markdown stays clean:
-
-```bash
-gh issue create \
-  --title "<component>: <concise summary>" \
-  --label "type: bug" --label "priority: P2" \
-  --body "$(cat <<'EOF'
-## Summary
-...
-## Reproduction
-...
-## Impact
-...
-## Suggested fix
-...
-## Scope
-...
-## Related
-- #N
-EOF
-)"
-```
-
-Title convention: `<component>: <summary>` (e.g. `google-drive MCP: drive_file_get rejects valid fields`). Capture the returned issue number and report it back.
-
-### 6. Confirm + report
-Echo the issue URL, the type/priority/quick-win labels applied, and the component. If the user was mid-task, offer to keep going.
+Then file via `issue-creation` §6 and echo the URL, labels, and component. If the user was mid-task, offer to keep going.
 
 ## Dogfooding
 

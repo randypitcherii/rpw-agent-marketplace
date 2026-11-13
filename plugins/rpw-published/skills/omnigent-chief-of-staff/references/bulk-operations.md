@@ -102,10 +102,11 @@ uv run --no-project --with 'omnigent[databricks]' python scripts/fleet_action.py
 
 `last_task_error_code=runner_disconnected` → the process is gone, relaunch. No code
 → nothing killed the task, so nudge it. Then check the host
-(`omnigent host status`, and the `omnigent-host` skill if it is installed in the
+(`omnigent host status`, and a host-daemon skill if one is installed in the
 user's environment); a dead host kills every session on it, and relaunching into a
 dead host just makes more corpses. Relaunch = same brief file, same worktree, new
-session (`dispatch-launch`).
+session (`dispatch-launch`), and never archive the dead session first: archiving can
+delete the worktree the relaunch needs (#2571).
 
 **When a raw call 4xxs, read [raw-rest-recovery.md](raw-rest-recovery.md) before
 retrying.** Three failures there are deterministic and never resolve on a second
@@ -120,9 +121,11 @@ curl -s -X DELETE "$BASE/v1/sessions/$SID"
 # -> {"deleted": true}
 ```
 
-or `sys_session_close(conversation_id=…)`. Closing **does not touch the worktree**
-and does not kill processes running in it. Sweep before teardown
-(`dispatch-launch/session-lifecycle.md`).
+or `sys_session_close(conversation_id=…)`. Archiving can delete the bound worktree
+(`git worktree remove --force`, no dirty check, branch kept, #2571), and none of
+these kills processes running in it. For a session bound to a worktree prefer
+`make session-close SID=…`, which refuses while the worktree holds uncommitted work
+or wave records. Sweep before teardown (`dispatch-launch/session-lifecycle.md`).
 
 Bulk-close candidates are `parked` sessions whose artifact is confirmed (PR merged,
 or no workspace and nothing to lose). Print the list. Confirm. Then loop. A `parked`

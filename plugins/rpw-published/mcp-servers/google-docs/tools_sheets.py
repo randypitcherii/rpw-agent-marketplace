@@ -3,7 +3,9 @@
 Google Sheets (API v4) tools for the Google Docs MCP server.
 
 Values read/write/append/clear plus a raw ``spreadsheets.batchUpdate`` formatting
-passthrough. Registered on the shared ``app.mcp`` instance alongside the core
+passthrough, and the two read-back tools that close the format→verify loop
+(#1125): ``gsheets_get_layout`` (row/column pixel sizes + optional effective
+cell format) and ``gsheets_export_pdf`` (Drive export to a local PDF). Registered on the shared ``app.mcp`` instance alongside the core
 Docs tools (``mcp_server``) and the media/collab tools (``tools_media``), and
 ride the SAME authenticated client + ``policy`` gating those use — Sheets v4
 needs no new dependency and no separate credential store (#197).
@@ -19,12 +21,27 @@ of rows (each row a list of cells): ``[["Name", "Score"], ["Ann", 91]]``.
 """
 
 import json
+import os
+import tempfile
 from typing import Any, List
+from urllib.parse import quote
 
+import auth
 import policy
 import sheets_ops
 from app import mcp
 from sheets_ops import SHEETS_BASE
+
+# Drive v3 files resource — the same base ``tools_media`` uses for Drive calls.
+DRIVE_FILES_BASE = "https://www.googleapis.com/drive/v3/files"
+
+# spreadsheets.get field masks for gsheets_get_layout (#1125). The base mask is
+# sheet properties + per-row/column metadata (pixelSize, hiddenBy*); the
+# cell-format mask adds each cell's effectiveFormat (wrap, alignment, fonts).
+LAYOUT_FIELDS = "sheets(properties,data(rowMetadata,columnMetadata))"
+LAYOUT_FIELDS_WITH_FORMAT = (
+    "sheets(properties,data(rowMetadata,columnMetadata,rowData.values.effectiveFormat))"
+)
 
 
 @mcp.tool
@@ -234,5 +251,93 @@ def gsheets_format(spreadsheet_id: str, requests: List[dict]) -> str:
             return json.dumps(resp)
         policy.append_audit("gsheets_format", sid, f"requests={len(requests)}")
         return json.dumps(resp, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool
+def gsheets_get_layout(
+    spreadsheet_id: str,
+    range: str = "",
+    include_cell_format: bool = False,
+) -> str:
+    """Read sheet layout — column widths, row heights, sheet properties (spreadsheets.get, ungated).
+
+    The read-back half of gsheets_format: call it before editing to see the
+    current layout, and after to confirm widths/heights/wrap actually applied.
+
+    spreadsheet_id: raw ID or full Sheets URL.
+    range: optional A1 range(s), comma-separated, e.g. "Sheet1!A1:F40". Empty
+      (default) returns every sheet's full row/column metadata. With a range,
+      only the sheets/rows/columns it covers are returned.
+    include_cell_format: when true, also returns each cell's ``effectiveFormat``
+      (wrapStrategy, horizontal/verticalAlignment, textFormat, backgroundColor…).
+      REQUIRES ``range`` — per-cell data on a whole large sheet is unbounded.
+
+    Uses fields=sheets(properties,data(rowMetadata,columnMetadata)) (plus
+    data.rowData.values.effectiveFormat with the flag). Returns the raw
+    spreadsheets.get JSON: {"sheets": [{"properties": {sheetId, title,
+    gridProperties, ...}, "data": [{"rowMetadata": [{"pixelSize": 21}, ...],
+    "columnMetadata": [{"pixelSize": 100}, ...], "rowData": [...]}]}]}. On
+    error the raw {"error": {...}} envelope is passed through.
+    """
+    try:
+        sid = sheets_ops.normalize_spreadsheet_id(spreadsheet_id)
+        ranges = [r.strip() for r in range.split(",") if r.strip()]
+        if include_cell_format and not ranges:
+            return json.dumps({
+                "error": "include_cell_format requires a range (e.g. 'Sheet1!A1:F40') "
+                         "so per-cell formats stay bounded.",
+            })
+        fields = LAYOUT_FIELDS_WITH_FORMAT if include_cell_format else LAYOUT_FIELDS
+        params = [f"fields={quote(fields, safe='')}"]
+        params += [f"ranges={sheets_ops.encode_range(r)}" for r in ranges]
+        url = f"{SHEETS_BASE}/{sid}?{'&'.join(params)}"
+        return json.dumps(policy.api("GET", url), ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool
+def gsheets_export_pdf(spreadsheet_id: str) -> str:
+    """Export a spreadsheet as PDF to a local temp file (Drive files.export, ungated read).
+
+    The visual half of the format→verify loop: gsheets_format → gsheets_export_pdf
+    → Read the returned ``path`` → iterate. Exports the whole workbook (every
+    visible sheet) as Google renders it for print.
+
+    spreadsheet_id: raw ID or full Sheets URL.
+
+    Calls Drive ``files/{id}/export?mimeType=application/pdf`` (Drive read only —
+    no new OAuth scope) and writes the bytes to a fresh temp file. Returns
+    {"ok": true, "path": "<local .pdf path>", "bytes": <size>, "mime_type":
+    "application/pdf"}. On an API error the Drive {"error": {...}} envelope is
+    passed through; other failures return {"error": "..."}. Drive caps exports
+    at 10 MB.
+    """
+    try:
+        sid = sheets_ops.normalize_spreadsheet_id(spreadsheet_id)
+        url = f"{DRIVE_FILES_BASE}/{sid}/export?mimeType=application%2Fpdf"
+        body, mime_type = auth._fetch_authed_bytes(url)
+        if mime_type != "application/pdf" or not body.startswith(b"%PDF"):
+            try:
+                envelope = json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                envelope = None
+            if isinstance(envelope, dict) and "error" in envelope:
+                return json.dumps(envelope, ensure_ascii=False)
+            return json.dumps({
+                "error": f"Drive export did not return a PDF (mime_type={mime_type}, "
+                         f"{len(body)} bytes)",
+            })
+        fd, path = tempfile.mkstemp(prefix=f"gsheets-{sid}-", suffix=".pdf")
+        with os.fdopen(fd, "wb") as f:
+            f.write(body)
+        return json.dumps({
+            "ok": True,
+            "path": path,
+            "bytes": len(body),
+            "mime_type": mime_type,
+        })
     except Exception as e:
         return json.dumps({"error": str(e)})

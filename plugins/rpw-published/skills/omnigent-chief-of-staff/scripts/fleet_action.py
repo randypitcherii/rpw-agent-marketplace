@@ -334,7 +334,8 @@ def recovery_verdict(session: dict) -> tuple[str, str]:
         return (
             "relaunch",
             f"last_task_error_code={code}: the runner process is gone, so no nudge "
-            "can reach it. Relaunch in place — same brief, same worktree.",
+            "can reach it. Relaunch in place — same brief, same worktree; do not "
+            "archive the dead session first, archiving can delete its worktree (#2571).",
         )
     if code:
         return (

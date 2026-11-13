@@ -6,14 +6,21 @@ Copy-paste skeleton for wave worker dispatch briefs. Fill every `<...>` placehol
 
 **Update (#773):** wave 2026-08-02's apparent 100% first-turn stall rate did not survive reproduction — 14 controlled dispatches varying prompt shape, brief length, contract presence, model, agent type, step count, and gate-then-push sequencing produced **zero** stalls. Before adding more contract prose to this template on the strength of a stall report, apply the discriminator in [`subagent-dispatch/dispatch-liveness.md`](../subagent-dispatch/dispatch-liveness.md): prose cannot fix a supervisor-side observation error, and each round of hardening costs every future worker context it does not need.
 
-**Four sections are STAMPED, not copied (#1742/#1916).** `render_brief` (`scripts/wave_worker.py`) replaces the body of `## Task`, `## Fencing`, `## Environment` and `## Delivery` wholesale at `make wave-spawn` time, so anything written under those four headings HERE is dead prose that never reaches a worker — four #1089 environment facts and the #787 false-premise rule sat there unread until #1742 found them. All four therefore hold ONE placeholder paragraph each, and every durable worker rule lives under a heading the stamper does not touch (`## Working rules`, `## Turn-end contract`, `## Gate & verification`, `## Destination fencing`, `## Sync-coupled fencing`, `## Scope escape & confirm-first`) — #797: the destination-fencing rule belongs *beside* `## Fencing`, never inside it. `tests/test_wave_worker.py` **measures** the stamped set by probing `render_brief` and fails if a rule creeps back in, if the set changes, or if this count word disagrees with it; the count above is derived, not asserted as prose, because the prose said "two" for as long as four were stamped and the pinned sentence is what stopped a worker correcting it (#1916).
+**Four sections are STAMPED, not copied (#1742/#1916).** `render_brief` (`scripts/wave_worker.py`) replaces the body of `## Task`, `## Fencing`, `## Environment` and `## Delivery` wholesale at `make wave-spawn` time, so anything written under those four headings HERE is dead prose that never reaches a worker — four #1089 environment facts and the #787 false-premise rule sat there unread until #1742 found them. All four therefore hold ONE placeholder paragraph each, and every durable worker rule lives under a heading the stamper does not touch (`## Working rules`, `## Turn-end contract`, `## Gate & verification`, `## Destination fencing`, `## Sync-coupled fencing`, `## Scope escape & confirm-first`, `## Gated deliverables`) — #797: the destination-fencing rule belongs *beside* `## Fencing`, never inside it. `tests/test_wave_worker.py` **measures** the stamped set by probing `render_brief` and fails if a rule creeps back in, if the set changes, or if this count word disagrees with it; the count above is derived, not asserted as prose, because the prose said "two" for as long as four were stamped and the pinned sentence is what stopped a worker correcting it (#1916).
 
 **The four gate rules now live under `## Gate & verification` (#1931)** — #1086 enumerate-every-command, #1088 new-test portability, #786 name-the-live-check, #1090 two-sequenced-PRs. They used to sit under `## Delivery`, where `_DELIVERY_BODY` wiped them at stamp time, so they reached a worker only when a supervisor hand-pasted them into `## Task`; `## Gate & verification` is not stamped, they ship in every brief unaided, and `tests/test_wave_worker.py` pins each one against a *rendered* brief rather than against the template.
 
 **How to write the `## Task` body you paste in (#1251):**
 
 - **Name the symptom and the acceptance, not the implementation.** "Recovering a sandbox-capable deploy takes three commands in sequence; make recovery one command" survives a stale issue body; "create target X" does not. Supervisors write briefs from issue bodies that may be weeks old — you hold the current tree, so give the goal and let it reconcile.
+- **Name only the member gate here, never `make check` / `make verify`** (#2654). The stamped `## Delivery` gives the root gate to the supervisor (#1593), so a `## Task` that names it contradicts the brief. Every worker PR of wave #2636 spent a paragraph on that. If the issue's gate line says `make check`, translate it into the member gate (`make <member>-test`, or the focused pytest command). `wave-spawn` warns on a task file that names the root gate and refuses it under `--launch` unless you pass `--allow-root-gate`. A line that says the supervisor runs it is not flagged.
+- **Give a cheap live smoke to the worker** (#2652): [`planning-defaults.md`](planning-defaults.md#cheap-live-smokes-belong-to-the-worker-2652).
 - **When you prescribe a specific change, attach a verification instruction** — "check whether it already exists / whether the platform can express this; cite what you actually read, do not guess." The #1227 brief ordered a worker to create `bootstrap-dev`, which #884 had already landed; only the worker noticing kept that from burning turns.
+- **An environment fact carries the command that measured it and its output — or it is phrased as the issue's claim ("#N reports …") (#2023).** Restating an issue body in a "sandbox facts" paragraph turns a claim into ground truth for every worker that reads it. Wave `2026-09-28-gate-trust` (#2011) told all ten cohort workers that `kill <pid>` "returns exit 0 and does **nothing** here (#2005)", and the #2005 brief said the supervisor "measured" it — it had not; it was #2005's body. The #2005 worker did measure it (PR #2019) and refuted it: plain `kill`, `pkill -f`, bash `set -m` + `kill -- -$!` and `os.killpg` all terminate cleanly; the "survivors" were respawned by a `--reload` parent. Same class as "a brief's counts are measured at dispatch time or omitted", extended from counts to environment facts.
+
+**Mark classifier-sensitive steps supervisor-owned in `## Task` (#2421).** Live applies to a server, process kills and sandbox-escape env flags get denied in-worker. The worker ships the code plus the exact command; you run it, without asking the human (`docs/process/live-steps.md`, #2567). Rule: [`planning-defaults.md`](planning-defaults.md#classifier-sensitive-steps-are-supervisor-owned-2421).
+
+**A skill's tests live outside its directory — fence them too (#2331).** A fence of `plugins/<p>/skills/<x>/` misses the tests that assert on it, which sit in root `tests/test_<x>*.py` (and anywhere else that names the path). Before dispatch, run `grep -rl '<x>' tests/` and list every hit the change could touch under `## Fencing` — or say why it is out of fence. Wave #2308 left these out twice (PR #2315 edited `tests/test_configure_claude_code_proxy_skill.py`, PR #2318 `tests/test_cursor_bridge_hygiene.py`): both correct fence escapes, both a review cycle.
 
 **Before you fence a worker to any directory, check it for a sync coupling (#1901):** `grep -n '^sync-' Makefile`. If the fence includes a **source** side, either add the vendored copy to the fence **and** name the `make sync-*` target in the `## Task` body, or say in the brief that the supervisor owns the sync. Naming the covering tests is not enough — the drift check lives in the root gate the worker is fenced out of, so it cannot see the failure and cannot infer the coupling from inside the fence (PR #1899: correct-looking fence, one CI cycle, one triage round). The worker-facing half of this is `## Sync-coupled fencing` below, which ships in every brief.
 
@@ -51,7 +58,7 @@ If reproducing a bug needs CPU/IO load, the harness must die on its own even if 
    - **zsh cannot, in an agent shell:** both `set -m` and `setopt monitor` fail with `can't change option: -m` / `can't change option: monitor` — there is no controlling terminal. **zsh is the default shell here**, so a brief that says "`set -m` before the first spawn" without naming bash prescribes a line that errors and leaves every job in your group.
    - **Shell-independent:** spawn from Python with its own group and signal that — `subprocess.Popen([...], preexec_fn=os.setpgrp)` then `os.killpg(os.getpgid(p.pid), signal.SIGTERM)` (measured: child pid `92473` in pgid `92473`, gone after the group signal). This is the form `wave-sweep --kill` itself uses.
 
-   Without a group of its own the job inherits yours and `-$!` is the no-op above. `kill $(jobs -p)` is NOT sufficient either: it misses reparented subshells, which is how 48 orphaned busy loops survived their `kill` and spun for 11h40m at load ~300 until a human noticed.
+   Without a group of its own the job inherits yours and `-$!` is the no-op above. `kill $(jobs -p)` is NOT sufficient either: it misses reparented subshells, which is how the #644 busy loops survived their `kill` (the incident: `subagent-dispatch/load-harness-safety.md`).
 
    **Signal only a group you created yourself.** Both forms above *make* a new group for your load, which is the whole point: a pgid you created contains only your own jobs, so signalling it cannot reach anything else. A pgid you merely *found* is not a container for anything — measured on this host, one supervisor Bash call put 32 processes in a single pgid: its own shell, one worker's `claude -p`, and that session's entire MCP fleet. Never `killpg` a group you did not create (and never your own: `kill -- -$$` from inside your session would reap make, uv and your own shell). To kill someone else's process, name its **pid**, or hand the whole job to `wave-sweep --kill`, which gates every group signal on membership.
 
@@ -74,6 +81,8 @@ It reads the process table with `pgrep -fl` first and `ps -axww` second, because
 
 Read that line, not the exit code: `make` collapses every failure outcome to its own exit 2. Also name your harness's own command string if it differs from the worktree path.
 
+If the permission classifier denies the sweep or its `--kill`, you know nothing: report it as **denied**, never as clean, with the exact command. The supervisor runs it (#2421).
+
 **To reap survivors, use the sweep — not a hand-rolled kill** (#2005):
 
 ```bash
@@ -95,6 +104,13 @@ Four environment facts, not preferences (#1089):
 - **Read this brief with `cat <absolute-path>`**, never a `Read` tool — the brief lives outside your cwd and that read is denied.
 - **Scratch files go inside your worktree**, or arrive via a Bash heredoc — a `Write` to `/tmp` is denied even when `Write` is allowed.
 - **Never `--no-verify`.** If the commit hook blocks, fix what it reports.
+
+Two zsh traps — zsh is the default shell here, and both turned green commands red in one wave (#2060):
+
+- **Pipe a gate only under `set -o pipefail`, and gate a commit or push on the tool's own exit code, never `tail`'s.** `pytest … | tail -1; git commit … && git push` pushed a red run: the pipe reported `tail`'s 0 and the `;` dropped pytest's status anyway.
+- **Never put several argv words in one unquoted variable — zsh does not word-split it.** `FLAGS="--with a --with b"; uv run $FLAGS …` hands `uv` ONE argument. Type the command literally, or use an array: `flags=(--with a --with b); uv run "${flags[@]}" …`.
+
+**Put new tests in a new file named for your issue** (`tests/test_<area>_<issue>.py`), never appended to a shared test file, unless the issue targets that file (#2243). Parallel workers appending to one file conflicted on every PR after the first; separate files cannot.
 
 **State any premise in the issue that is now false, in your PR body** — do not silently work around it (#787). Repo renames (#745), landed ADRs, and merged PRs age an issue body into a snapshot asserting present-tense facts. A mechanical path-staleness check for issue bodies is #1087's territory: report the false premise here, do not build the check.
 
@@ -165,6 +181,7 @@ Some directories here are **vendored**: a source you edit, plus a generated copy
 | a `plugins/*/skills/<name>/` skill a bundle vendors | `agents/omnigent/<bundle>/skills/<name>/` | `make sync-agents` |
 | `skills/communication/references/core-rules.md` | `agents/omnigent/house-standard.md` | `make sync-communication-core` |
 | `libs/rpw_mcp_lib/lib/` | both plugins' `mcp-servers/lib/` | `make sync-mcp-lib` |
+| a new `agents/omnigent/<custom>/` bundle | registrations outside the bundle: `INSTRUCTED_CUSTOM_AGENTS` in `tests/test_house_agents.py`, and `REPO_TARGETS` in `scripts/sync_communication_core.py` if its `AGENTS.md` embeds the core markers (#2063) | edit both, then `make sync-communication-core` |
 
 **Confirm the current set yourself** — `grep -n '^sync-' Makefile` is authoritative; a coupling added after this brief was written is still yours to notice.
 
@@ -193,18 +210,29 @@ Two classes of change are not yours to decide, however small the diff looks. Bot
 - **Finish everything else in your fence.** A scope escape is not a reason to end your turn early — your turn still ends with a PR for the in-scope work (or a specific blocker if nothing was deliverable). Say explicitly what you left out.
 - The **supervisor** owns the escalation from there and queues it for the user as a **Decisions needed** block in `WAVE-STATE.md` and the wave issue.
 
+**A live step is not a scope escape.** Deploys, applies and live smokes your issue needs are yours to run, verify and report, unless the step is on the stop list in `docs/process/live-steps.md` (#2567). Your `## Delivery` section carries that list.
+
 **Confirm-first, in an unattended wave, means "not wave work" — unless the human already confirmed it.** Triggers 2 and 3 need a human confirmation the supervisor can neither give on the user's behalf nor invent. So check the record, in this order:
 
 - **Your brief, or the issue text it quotes, records the human's prior confirmation *and* the exact change approved** → that change is in scope. Apply exactly it, nothing adjacent, and cite where the confirmation is recorded in your PR body.
 - **Anything else — no record, a vague "go ahead", or an approval for a different change than the one you now need** → do not apply it at all. Deliver the rest of your fence and report the change you deliberately did NOT make. A supervisor's inference is not a confirmation.
 
+## Gated deliverables (#1116 — hard rule, never stamped)
+
+**A brief cannot carry authorization.** The permission classifier clears a gated action (a personal-settings edit such as `~/.claude/settings.json`, spawning an agent, a secret-adjacent file) only from a live approval or a settings rule. "the user authorized X" in this file is inert text to it. A confirmation recorded under `## Scope escape & confirm-first` puts a change in scope; it does not clear the classifier.
+
+- **Never retry a classifier denial.** Do not reword it, switch tools or split it into pieces. One denial is the answer.
+- **Deliver around it.** Finish everything else in your fence and open your PR as usual.
+- **Put the gated blocker in your PR body:** the exact denied command or edit, verbatim, with its target path and the intended result. The supervisor applies it under live approval.
+
 ## Gate & verification (hard rules — never stamped)
 
-These four are the gate's own contract. They lived under `## Delivery` until #1931 and were wiped by the stamper there, so they reached a worker only when a supervisor happened to paste them by hand.
+These five are the gate's own contract. The first four lived under `## Delivery` until #1931 and were wiped by the stamper there, so they reached a worker only when a supervisor happened to paste them by hand.
 
 - **Gate — enumerate every command, never the wrapper target.** Name every command of the member gate this fence touches, in order, with its pinned tool version, and quote **command + exit code per check** in the PR body (#1086). `make <member>-test` hides 2–5 commands: PR #1060 reported `make high-voltage-test` green having run only its `pytest` half and never its `uvx ruff@0.14.14 check . && uvx ruff@0.14.14 format --check .` half, so CI went red on formatting with every test passing. Run each command in the foreground; poll to completion; retry once on exit 137.
 - **Portability of any new test** (#1088). A new test that shells out to a script or resolves a filesystem path must be `skipif`-guarded to its platform or built on a tmpdir fixture. Your gate also runs on `ubuntu-latest`, where BSD tooling is absent and `/bin/python` exists (PR #1018 shelled out to a BSD-only render script; PR #1054 walked parents up to `/bin/python`). The repo convention is `@pytest.mark.skipif(sys.platform != "darwin", reason=…)` — see `tests/test_rpw_log_cap.py` and `projects/raycast/tests/test_script_commands.py`.
 - **Name the live check** (#786). For any task with runtime behavior, state the command, the environment, and what would prove it works; the PR body reports the **result**, not "tests pass". Fixtures went green while the live run failed on six surfaces in one wave (#705, #698, #762, #721, #718, #747) — and live runs refute too: #773's 14 real dispatches disproved a defect inferred from disk state.
+- **A fake models the real API's rejections** (#2652). A test double you write for an external API (an SDK, a server, a session runtime) is built from the real implementation, not from the call you hope works. Read its source and model what it **refuses**: argument type checks, async timing (a write that is not readable yet), and server-side refusals (a 400 or `NOT_FOUND`). Cite the source you read, file and lines, in the PR body. Wave #2636 shipped four defects past a green member gate, each one a fake more lenient than the real thing: `add_traces` took id strings the real mlflow parses as trace JSON; a synchronous fake hid an async export (`NOT_FOUND`); `create_label_schema(overwrite=True)` returns 400 once a session references the schema; and a stub answered without the real session's runner being woken. Every one surfaced within seconds of a real call. If the brief gives you that cheap live smoke, run it; it outranks any fake.
 - **Two sequenced PRs** (#1090). If this brief delivers more than one PR: after the supervisor merges PR *n*, `git fetch origin` and **rebase onto the updated base** before opening PR *n+1*. `deleteBranchOnMerge` is `true` here, so the squash deletes the head branch and freezes the merge-base at the fork commit — an unrebased second PR re-shows the merged content in its three-dot diff (PR #1060 carried +1245/−18 of already-merged #1019).
 
 ## Delivery (Gate mode — non-negotiable)

@@ -14,7 +14,14 @@
 #                                  for root-in-a-container, where Chrome refuses to start
 #                                  without it. Drops renderer containment for the
 #                                  agent-authored HTML this script renders. See the
-#                                  "Sandbox" comment below before setting this.
+#                                  "Sandbox" comment in chrome-lib.sh before setting this.
+#
+# Exit codes:
+#   0  PNG written
+#   1  render failure: bad input, or Chrome still failing after RENDER_ATTEMPTS tries
+#      (Chrome's exit code and stderr are printed)
+#   3  Chrome's own sandbox cannot start here because this process already runs in
+#      one (a nested sandbox, e.g. an agent's macOS Seatbelt) — not a render defect
 set -euo pipefail
 
 IN="${1:?usage: render.sh <in.html> [out.png]}"
@@ -26,24 +33,11 @@ SCALE="${RPW_SCALE:-2}"
 # screenshots its own "site can't be reached" page instead of the diagram.
 IN_ABS="$(cd "$(dirname "$IN")" && pwd)/$(basename "$IN")"
 
-find_chrome() {
-  if [[ -n "${CHROME_PATH:-}" ]]; then
-    [[ -x "$CHROME_PATH" ]] && { printf '%s' "$CHROME_PATH"; return 0; }
-    command -v "$CHROME_PATH" 2>/dev/null && return 0
-    return 1
-  fi
-  local c
-  for c in google-chrome google-chrome-stable chromium chromium-browser chrome; do
-    command -v "$c" 2>/dev/null && return 0
-  done
-  for c in \
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-    "/Applications/Chromium.app/Contents/MacOS/Chromium" \
-    "/opt/google/chrome/chrome"; do
-    [[ -x "$c" ]] && { printf '%s' "$c"; return 0; }
-  done
-  return 1
-}
+# Chrome discovery, the sandbox flag setup and the nested-sandbox detector are
+# shared with qa.sh (#2288); resolved from this script's own dir, never the cwd.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=chrome-lib.sh
+source "$SCRIPT_DIR/chrome-lib.sh"
 
 CHROME="$(find_chrome)" || {
   cat >&2 <<'EOF'
@@ -56,19 +50,16 @@ EOF
   exit 1
 }
 
-# ── Sandbox ─────────────────────────────────────────────────────────────────
-# The sandbox is Chrome's containment boundary between a renderer bug and this
-# machine's filesystem. The HTML rendered here is agent-authored and may embed
-# externally-sourced text unescaped, so it stays on by default — both
-# `brew install --cask google-chrome` and `apt-get install chromium`, as a
-# normal user, are exactly where it works. --no-sandbox exists for root in a
-# container, which this skill's setup instructions never describe; opt in
-# explicitly if that's your case.
-CHROME_FLAGS=(--headless --disable-gpu --hide-scrollbars)
-if [[ "${RPW_DIAGRAM_UNSAFE_NO_SANDBOX:-0}" == "1" ]]; then
-  echo "render.sh: WARNING — RPW_DIAGRAM_UNSAFE_NO_SANDBOX=1 set: running Chrome with --no-sandbox. Only for root-in-a-container; this drops renderer containment for agent-authored HTML." >&2
-  CHROME_FLAGS+=(--no-sandbox)
-fi
+# Sandbox stays on unless RPW_DIAGRAM_UNSAFE_NO_SANDBOX=1 — see chrome-lib.sh.
+chrome_flags_init render.sh
+
+# ── Nested sandbox and transient failures ──────────────────────────────────
+# Inside another sandbox, Chrome's sandbox fails the same way every run, so
+# retrying is pointless and --no-sandbox would be the wrong fix (#2057): exit 3.
+# Anything else — Chrome exiting non-zero under load, an empty measure — retries
+# a bounded number of times, keeping stderr so a persistent failure names its
+# cause instead of leaking Chrome's own exit status (#2228).
+RENDER_ATTEMPTS=3
 
 # ── Pass 1: measure ────────────────────────────────────────────────────────
 # The script is appended to a throwaway copy, so diagram sources stay clean and
@@ -78,23 +69,41 @@ fi
 TMPDIR_M="$(mktemp -d)"
 MEASURE_HTML="$TMPDIR_M/measure.html"
 trap 'rm -rf "$TMPDIR_M"' EXIT
+
+# ── Profile isolation ──────────────────────────────────────────────────────
+# Every launch gets its own throwaway --user-data-dir. Without one, headless
+# Chrome uses the user's real profile and its Crashpad database, so concurrent
+# renders (parallel agents, `pytest -n auto`) contend on that shared state at
+# shutdown: Chrome writes the PNG, then its teardown watchdog expires and it
+# exits 2 — measured 6 of 36 launches at 12-way concurrency, 0 of 36 with a
+# per-launch profile (#2392). Retrying cannot fix that while the others run.
+fresh_profile() { mktemp -d "$TMPDIR_M/profile.XXXXXX"; }
 {
   cat "$IN_ABS"
   printf '%s' '<script>(function(){var b=document.body,s=getComputedStyle(b),r=b.getBoundingClientRect(),mr=parseFloat(s.marginRight)||0,mb=parseFloat(s.marginBottom)||0;var w=Math.max(r.right+mr,b.scrollWidth+r.left+mr),h=Math.max(r.bottom+mb,b.scrollHeight+r.top+mb);document.title="RPWSIZE:"+Math.ceil(w)+"x"+Math.ceil(h);})();</script>'
 } > "$MEASURE_HTML"
 
 MEASURE_ERR="$TMPDIR_M/measure.err"
-SIZE="$("$CHROME" "${CHROME_FLAGS[@]}" \
-  --window-size=600,600 --virtual-time-budget=1500 --dump-dom \
-  "file://$MEASURE_HTML" 2>"$MEASURE_ERR" | grep -o 'RPWSIZE:[0-9]*x[0-9]*' | head -1 || true)"
+SIZE=""
+for ((attempt = 1; attempt <= RENDER_ATTEMPTS; attempt++)); do
+  SIZE="$("$CHROME" "${CHROME_FLAGS[@]}" --user-data-dir="$(fresh_profile)" \
+    --window-size=600,600 --virtual-time-budget=1500 --dump-dom \
+    "file://$MEASURE_HTML" 2>"$MEASURE_ERR" | grep -o 'RPWSIZE:[0-9]*x[0-9]*' | head -1 || true)"
+  [[ -n "$SIZE" ]] && break
+  exit_if_nested_sandbox "$MEASURE_ERR" render.sh "not a render defect"
+  if ((attempt < RENDER_ATTEMPTS)); then
+    echo "render.sh: measure attempt $attempt/$RENDER_ATTEMPTS got no size from Chrome; retrying" >&2
+    sleep 1
+  fi
+done
 
 if [[ -z "$SIZE" ]]; then
   echo "render.sh: could not measure $IN (did Chrome fail to load it?)" >&2
-  if grep -qi 'sandbox' "$MEASURE_ERR" 2>/dev/null; then
+  if [[ "$(classify_chrome_err "$MEASURE_ERR")" == sandbox ]]; then
     echo "render.sh: Chrome's own stderr mentions the sandbox — if this is root in a" >&2
     echo "  container, Chrome refuses to start without --no-sandbox. That flag is opt-in" >&2
     echo "  via RPW_DIAGRAM_UNSAFE_NO_SANDBOX=1 (UNSAFE: drops renderer containment for" >&2
-    echo "  this agent-authored HTML — see render.sh's Sandbox comment). Chrome's error:" >&2
+    echo "  this agent-authored HTML — see chrome-lib.sh's Sandbox comment). Chrome's error:" >&2
     sed 's/^/    /' "$MEASURE_ERR" >&2
   fi
   exit 1
@@ -104,9 +113,27 @@ W="${SIZE%x*}"
 H="${SIZE#*x}"
 
 # ── Pass 2: screenshot at the measured size, 2x ────────────────────────────
-"$CHROME" "${CHROME_FLAGS[@]}" \
-  --window-size="$W,$H" --force-device-scale-factor="$SCALE" \
-  --virtual-time-budget=1500 --screenshot="$OUT" "file://$IN_ABS" >/dev/null 2>&1
+# Stderr is kept, not discarded: a bare `>/dev/null 2>&1` here once let Chrome's
+# own exit status (2) escape through `set -e` with no message at all (#2228).
+SHOT_ERR="$TMPDIR_M/screenshot.err"
+for ((attempt = 1; attempt <= RENDER_ATTEMPTS; attempt++)); do
+  rm -f "$OUT"
+  CHROME_RC=0
+  "$CHROME" "${CHROME_FLAGS[@]}" --user-data-dir="$(fresh_profile)" \
+    --window-size="$W,$H" --force-device-scale-factor="$SCALE" \
+    --virtual-time-budget=1500 --screenshot="$OUT" "file://$IN_ABS" >/dev/null 2>"$SHOT_ERR" ||
+    CHROME_RC=$?
+  [[ "$CHROME_RC" -eq 0 && -s "$OUT" ]] && break
+  exit_if_nested_sandbox "$SHOT_ERR" render.sh "not a render defect"
+  if ((attempt < RENDER_ATTEMPTS)); then
+    echo "render.sh: screenshot attempt $attempt/$RENDER_ATTEMPTS failed (Chrome exit $CHROME_RC); retrying" >&2
+    sleep 1
+  fi
+done
 
-[[ -s "$OUT" ]] || { echo "render.sh: Chrome wrote no PNG to $OUT" >&2; exit 1; }
+if [[ "$CHROME_RC" -ne 0 || ! -s "$OUT" ]]; then
+  echo "render.sh: Chrome wrote no PNG to $OUT after $RENDER_ATTEMPTS attempts (last Chrome exit $CHROME_RC). Chrome's stderr:" >&2
+  tail -n 20 "$SHOT_ERR" | sed 's/^/    /' >&2
+  exit 1
+fi
 echo "$OUT  ${W}x${H} css px  ->  $((W * SCALE))x$((H * SCALE)) px @${SCALE}x"

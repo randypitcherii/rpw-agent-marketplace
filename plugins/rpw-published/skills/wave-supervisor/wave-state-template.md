@@ -29,18 +29,12 @@ The `- **Wave issue:** #<n>` line below is load-bearing for that guard: it is
 where `wave-guard`, `wave-spawn` and `wave-land` learn which issue carries the
 lease. A wave whose owner cannot be determined is refused, not assumed free.
 
-The `- **Observability:**` line carries the wave page's resolved frontend URL so a
-takeover supervisor (#886) inherits the view instead of re-deriving it — record
-the URL you resolved from `~/.rpw/ports.json`, or `not running (<reason>)` when
-the page would not start (a disclosure, never a blocker). Mechanics:
-[`wave-observability.md`](wave-observability.md).
-
 ## `## Workers` is GENERATED — never hand-maintained (#1344)
 
 The worker table is a **projection of `.wave/worker-*.meta.json`**, not a second
 ledger. Wave `2026-08-24-raycast-supercmd` reached close-out with six worker
-metadata files on disk and one row in the table; the observability page and the
-close-out preflight both read the table, so the state of record omitted five of
+metadata files on disk and one row in the table; the close-out preflight read the
+table, so the state of record omitted five of
 six live workers.
 
 - `make wave-state-append SECTION=Workers` is **refused** (exit 1), and the
@@ -62,7 +56,10 @@ six live workers.
   `PR=` is how the `PR` column gets filled — pass it at merge time, because
   nothing else on the supervisor path ever populates it (#1748). `ISSUE=` accepts
   **any issue the worker owns**, not only the lead its meta file is named for, so a
-  grouped worker's second issue is recordable too (#1749).
+  grouped worker's second issue is recordable too (#1749). `STATUS=merged`
+  refuses when the worker's log (the one its newest launch record names) has no
+  landed report: run `make wave-land` with the report first. `NO_REPORT=1` records
+  it without one, on purpose (#2422).
 - Everything else is derived. Status precedence, most-decided first: recorded
   status → `PR open` (a `pr` on any record) → `reported` (a report in the log) →
   `relaunched` (more than one launch record) → `dispatched`.
@@ -112,7 +109,6 @@ mine and close out against another wave's state.
 - **Mode:** bounded (<#a, #b, …>) | unbounded (<stop conditions>)
 - **Initialized:** <ISO-8601 UTC>
 - **Artifacts:** `.wave/worker-<issue>.log` + `.wave/worker-<issue>.meta.json`
-- **Observability:** <frontend URL from `~/.rpw/ports.json`, "waves" tab> | not running (<reason>)
 
 ## Workers
 

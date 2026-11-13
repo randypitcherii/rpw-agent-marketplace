@@ -47,6 +47,8 @@ make session-list                                   # ids, status, titles
 make session-rename SID=<id> TITLE="<repo>::<branch>::<date>::<state> — <summary>"
 ```
 
+`SID=self` renames the calling session — the fallback when `sys_session_rename` is down (#2542) — resolved from `$OMNIGENT_TERMINAL_LAUNCH_SESSION_ID`, then `$OMNIGENT_RUNNER_PRIMARY_SESSION_ID`, failing when both are unset; `make session-close SID=self` is refused.
+
 `scripts/session-rename.sh` is the same thing without `make`. It resolves the API base
 (`$OMNIGENT_API_BASE` → `$RUNNER_SERVER_URL` → the `server:` line of
 `~/.omnigent/config.yaml` → `http://127.0.0.1:6767`) and the auth a Databricks-fronted
@@ -81,9 +83,10 @@ title in the rail, and every path-A dispatch. Manual renames go through `PATCH`.
 
 - **200 chars is a hard cap** on create and on `PATCH` — 201 is a 422
   `string_too_long`, a refusal rather than a truncation.
-- **`/` is stored as a space.** `worker/1613-x` reads back `worker 1613-x`, so no
-  branch segment ever round-trips verbatim; the script substitutes it up front and says
-  so. `\`, `|`, `#` and `::` survive.
+- **`/` is stored verbatim.** `worker/1613-x` reads back `worker/1613-x`
+  (re-measured 2026-10-05, #2145 — an earlier server stored it as a space), so the
+  script sends it unchanged; its read-back exits 5 if a server ever rewrites it.
+  `\`, `|`, `#` and `::` survive too.
 - **Trailing whitespace is stripped**; a 1-char title is a 422 `string_too_short`.
 
 Title shape is `docs/process/agent-session-titles.md`; when a title will not fit, keep
@@ -133,7 +136,8 @@ with the report that named it.
 ## Close a session
 
 ```bash
-make session-close SID=<id>      # = scripts/session-close.sh <id>
+make session-close SID=<id>            # = scripts/session-close.sh <id>
+make session-close SID=<id> FORCE=1    # accept losing what the guard found
 ```
 
 `session-close` sends the PATCH `sys_session_close` sends — the `omnigent.closed`
@@ -146,25 +150,60 @@ Use it for any session you own. `sys_session_close(conversation_id=<id>)` works 
 inside your own spawn tree: a session created over REST — every path-A dispatch and
 the wave-kickoff write probe — answers `session_out_of_tree`, and the omni CLI (0.16)
 has no close command (#2030). A raw `curl -X DELETE "$API_BASE/v1/sessions/$SID"`
-(omni-api.sh base) hard-deletes instead; archive is reversible.
-Closing a session **does not touch the worktree**.
+(omni-api.sh base) hard-deletes instead; archive is reversible, the worktree is not.
+
+### Archiving a session can delete its bound worktree (#2571)
+
+That is an Omnigent feature, not a bug. The archive teardown runs
+`git worktree remove --force` on the session's `workspace` once the runner stops:
+
+- **Bound worktrees too.** A path-A `existing_worktree: true` bind records the
+  branch, and archive cleanup keys on that, not on who created the directory.
+- **No dirty check.** Uncommitted changes, untracked files and gitignored files
+  (`WAVE-BRIEF.md`, `WAVE-STATE.md`, `WORKER-BRIEF.md`, `.wave/`) all go. The
+  **branch is kept**, so committed work survives.
+- **Failed sessions too.** On 2026-10-23 a supervisor that died at spawn was
+  archived at 20:09:49. Its worktree and staged brief were removed at 20:10:00.
+
+The Omnigent server now deletes the bound worktree on every archive by default,
+whether or not the request asks for it (confirmed by Randy 2026-10-24; the PATCH's
+`delete_worktree` flag no longer gates it). Treat **every** archive,
+`sys_session_close` and `DELETE` as deleting the worktree. The one guaranteed keep is
+not archiving: flip the title to ❌/🛑 and leave the session until its worktree is done.
+
+So `session-close` guards it. Before archiving, it refuses (exit 6, nothing sent) while
+the bound worktree on this host holds uncommitted or untracked changes or any of the
+gitignored wave records above. `FORCE=1` (`--force`) is the explicit "losing that is
+fine". It skips the guard for an already-archived session, a path not on this host,
+a non-git directory, and the main checkout, which the server never removes.
+`sys_session_close` and `DELETE` have no guard, so prefer `make session-close` for any
+session bound to a worktree.
 
 ## Tear down the worktree
 
+Order matters, because the close may remove the directory:
+
+1. **Make the work safe.** The PR merged, or everything worth keeping is committed and
+   pushed. Wave records are copied or committed wherever their owner says.
+2. **Close the session** (`make session-close SID=<id>`, plus `FORCE=1` if the only
+   thing left is a disposable brief).
+3. **Clean up what is left:**
+
 ```bash
 MAIN=$(dirname "$(git -C "$WT" rev-parse --git-common-dir)")
-git -C "$MAIN" worktree remove "$WT"
+[ -d "$WT" ] && git -C "$MAIN" worktree remove "$WT"   # if the server has not already
+git -C "$MAIN" worktree prune                           # drops the record of a removed one
 git -C "$MAIN" branch -D <branch>       # squash-merge --delete-branch removes only the remote
 ```
 
 Use the branch name you created — nothing prefixed it. `worktree remove` refuses while
-the tree is dirty; `--force` only after you have read what is uncommitted. If the
-directory is already gone, `git worktree prune` clears the stale record.
+the tree has tracked or untracked changes, but **silently deletes gitignored files**.
+Use `--force` only after you have read what is uncommitted.
 
-The separated lifetimes are a **strict improvement** on the Superset path, where
-`workspaces delete --local` removed the worktree synchronously and destroyed the
-current terminal's CWD the moment it returned. Here killing the session never eats the
-work, and removing the worktree never orphans a session record.
+The Superset path's `workspaces delete --local` removed the worktree synchronously and
+destroyed the current terminal's CWD the moment it returned. Omnigent's archive does
+the same thing deferred, a few seconds later, so the session's lifetime and its
+worktree's are **not** separate.
 
 **But a worktree removal does not kill what runs in it** (#644). Sweep first:
 
@@ -192,7 +231,8 @@ the terminal mid-command) is gone, but the sequencing still matters:
    git -C "$(dirname "$(git rev-parse --git-common-dir)")" branch -D <branch> 2>/dev/null || true
    ```
 5. **Remove the worktree from outside it** — removing the directory you are standing in
-   leaves the shell in a dead cwd:
+   leaves the shell in a dead cwd. Removing it yourself, before the close, also leaves
+   the archive nothing to delete:
    ```bash
    MAIN=$(dirname "$(git rev-parse --git-common-dir)")
    cd "$MAIN" && git worktree remove "$OMNIGENT_RUNNER_WORKSPACE"
@@ -210,8 +250,9 @@ git -C <main-checkout> worktree list
 A bare `curl "$API_BASE/v1/sessions"` works only against the local host service; the
 managed server needs the bearer token and shard header `session-rename.sh` builds.
 
-Both lists matter and they can disagree: a deleted session can leave a worktree, and a
-removed worktree can leave a session record. Reconcile them at close-out rather than
+Both lists matter and they can disagree: a deleted session can leave a worktree, an
+archived one can take its worktree with it, and a removed worktree can leave a session
+record. Reconcile them at close-out rather than
 trusting either alone.
 
 ## Scheduled dispatch

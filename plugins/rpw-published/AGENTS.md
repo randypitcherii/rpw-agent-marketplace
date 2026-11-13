@@ -16,9 +16,13 @@ Editing one of these leaves a generated copy stale, and the equality check runs 
 
 The reverse also holds: **`mcp-servers/lib/` here is a generated copy**, not a source — edit `libs/rpw_mcp_lib/lib/` and run `make sync-mcp-lib`.
 
-**MCP servers register in `mcp-servers/rpw/servers.json`, not `.mcp.json`.** The plugin's `.mcp.json` holds one entry, the `rpw` aggregator (`lib/aggregator.py`, #2215), which fronts every backend listed there.
+**MCP servers register in `mcp-servers/rpw/servers.json`, not `.mcp.json`.** This plugin's `.mcp.json` holds the one `rpw` entry across both plugins (`mcp-servers/rpw/front.py` over the mcporter keep-alive runtime, ADR-2026-10-28, #2623). It serves every installed plugin's `servers.json`; `rpw-private/.mcp.json` stays empty.
 
 If a stale copy is outside your fence, report it rather than regenerating it — see `## Sync-coupled fencing` in `skills/wave-supervisor/worker-brief-template.md`.
+
+## Shipped shell assets (#723)
+
+Every shell file under `plugins/` (`*.sh`, or an extensionless file with a sh/bash/zsh shebang) ships to every installer, so `make verify` gates it: a `bash -n`/`zsh -n` syntax check plus ShellCheck at a pinned version (`scripts/lint_shell_assets.py`, run by `tests/test_shell_assets.py`). zsh gets the syntax check only, because ShellCheck cannot read it, and only where zsh is installed (macOS; the CI runner has none). Fix a finding, or excuse it in place with `# shellcheck disable=SCxxxx  # <reason>`. A sourced library with no shebang declares `# shellcheck shell=bash`. Decision logic beyond plumbing also needs a unit test that drives the script with its side-effecting commands stubbed through env overrides (the `RPW_HYGIENE_PGREP` pattern in `scripts/branch-hygiene.sh`).
 
 ## Quick Reference
 
